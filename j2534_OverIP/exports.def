@@ -1,0 +1,39 @@
+LIBRARY
+EXPORTS
+    PassThruOpen=_PassThruOpen
+    PassThruClose=_PassThruClose
+    PassThruSelect=_PassThruSelect
+    PassThruConnect=_PassThruConnect
+    PassThruDisconnect=_PassThruDisconnect
+    PassThruGetLastError=_PassThruGetLastError
+    PassThruIoctl=_PassThruIoctl
+    PassThruReadMsgs=_PassThruReadMsgs
+    PassThruReadVersion=_PassThruReadVersion
+    PassThruSetProgrammingVoltage=_PassThruSetProgrammingVoltage
+    PassThruStartMsgFilter=_PassThruStartMsgFilter
+    PassThruStartPeriodicMsg=_PassThruStartPeriodicMsg
+    PassThruStopMsgFilter=_PassThruStopMsgFilter
+    PassThruStopPeriodicMsg=_PassThruStopPeriodicMsg
+    PassThruScanForDevices=_PassThruScanForDevices
+    PassThruGetNextDevice=_PassThruGetNextDevice
+    PassThruWriteMsgs=_PassThruWriteMsgs
+    PassThruExConfigureWiFi=_PassThruExConfigureWiFi
+    PassThruExDeviceWatchdog=_PassThruExDeviceWatchdog
+    PassThruExDownloadCypheredFlashData=_PassThruExDownloadCypheredFlashData
+    PassThruExEraseFlash=_PassThruExEraseFlash
+    PassThruExInitiateCypheredFlashDownload=_PassThruExInitiateCypheredFlashDownload
+    PassThruExReadFlash=_PassThruExReadFlash
+    PassThruExResetFlash=_PassThruExResetFlash
+    PassThruExRunSelfTest=_PassThruExRunSelfTest
+    PassThruExWriteFlash=_PassThruExWriteFlash
+    PassThruLoadFirmware=_PassThruLoadFirmware
+    PassThruRecoverFirmware=_PassThruRecoverFirmware
+    PassThruReadIPSetup=_PassThruReadIPSetup
+    PassThruWriteIPSetup=_PassThruWriteIPSetup
+    PassThruReadPCSetup=_PassThruReadPCSetup
+    PassThruGetPointer=_PassThruGetPointer
+    PassThruGetNextCarDAQ=_PassThruGetNextCarDAQ
+    PassThruReadDetails=_PassThruReadDetails
+
+
+
