@@ -1,7 +1,7 @@
 # J2534_OIP_Wrapper
 
 ## Overview
-J2534_OIP_Wrapper is a multi-functional tool designed for J2534 driver emulation and Over-IP communication. It allows automotive developers to remotely interface with J2534 devices, simulating, logging, and interrupting the communication for testing and diagnostic purposes. The wrapper willbe compatible with PassThru 4.04 and 5.05 versions, ensuring broad support for various J2534 applications and standards.
+J2534_OIP_Wrapper is a multi-functional tool designed for J2534 driver emulation and Over-IP communication. It allows automotive developers to remotely interface with J2534 devices, simulating, logging, and interrupting the communication for testing and diagnostic purposes. The wrapper will be compatible with PassThru 4.04 and 5.05 versions, ensuring broad support for various J2534 applications and standards.
 
 > **Note:** This project is currently under heavy development. Features, APIs, and functionalities are subject to change as improvements and updates are being actively made.
 
