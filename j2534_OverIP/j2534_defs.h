@@ -127,7 +127,7 @@ enum MiscDef
 
 enum ProtocolId
 {
-
+    PROTOCOL_OVERLAPPED = 0x00,
     J1850VPW = 0x01,
     J1850PWM = 0x02,
     ISO9141 = 0x03,
@@ -170,23 +170,24 @@ enum ProtocolId
 
 enum IoctlId
 {
-    GET_CONFIG = 0x01,
-    SET_CONFIG = 0x02,
-    READ_VBATT = 0x03,
-    FIVE_BAUD_INIT = 0x04,
-    FAST_INIT = 0x05,
+    //Reserved for SAE                              0x0F - 0xFFFF
+    GET_CONFIG          = 0x01,
+    SET_CONFIG          = 0x02,
+    READ_VBATT          = 0x03,
+    FIVE_BAUD_INIT      = 0x04,
+    FAST_INIT           = 0x05,
 
     //NOT_USED = 0x06,
-    CLEAR_TX_BUFFER = 0x07,
-
-    CLEAR_RX_BUFFER = 0x08,
+    CLEAR_TX_BUFFER     = 0x07,
+    CLEAR_RX_BUFFER     = 0x08,
     CLEAR_PERIODIC_MSGS = 0x09,
-    CLEAR_MSG_FILTERS = 0x0A,
+    CLEAR_MSG_FILTERS   = 0x0A,
     CLEAR_FUNCT_MSG_LOOKUP_TABLE = 0x0B,
     ADD_TO_FUNCT_MSG_LOOKUP_TABLE = 0x0C,
     DELETE_FROM_FUNCT_MSG_LOOKUP_TABLE = 0x0D,
     READ_PROG_VOLTAGE = 0x0E,
 
+    //Reserved_for_SAE-2	0x00008004 - 0x0000FFFF
     SW_CAN_HS = 0x00008000,
     SW_CAN_NS = 0x00008001,
     SET_POLL_RESPONSE = 0x00008002,
@@ -202,6 +203,18 @@ enum IoctlId
     GET_DEVICE_INFO = 0x0000800C,
     GET_PROTOCOL_INFO = 0x0000800D,
     READ_PIN_VOLTAGE = 0x0000800E,
+
+    //Tool manufacturer specific                    0x10000 - 0xFFFFFFFF
+    K_LINE_MULTIPLEXER_CONTROL              = ((unsigned long)0x10000), /**< To direct the pass-thru device to drive the I+ME K-Line Multiplexer*/
+    READ_VBATT_PIN_1			            = ((unsigned long)0x10001), /**< Special for BMW to read the Voltage on OBD Pin 1*/
+    SELFTEST					            = ((unsigned long)0x10002), /**< To direct the pass-thru device to do some hardware test operations*/
+    CAN_SET_BTR					            = ((unsigned long)0x10003), /**< To direct the pass-thru device to select the can parameters by the BTR register of the CAN-Chip*/
+    CAN_MULTIPLEXER_CONTROL		            = ((unsigned long)0x10004), /**< To direct the pass-thru device to select the can physical layer*/
+    GET_HARDWARE_INFO			            = ((unsigned long)0x10006), /**< To Show Hardwareinformation (serialnumber...)*/
+    GET_TRACE_INFO							= ((unsigned long)0x10007), /**< Trace information from firmware*/
+    READ_CAN_ERR                            = ((unsigned long)0x10008), /**< Read CAN Error Information*/
+    SET_CAN_MODE                            = ((unsigned long)0x10009) /**< Set special CAN Modes e.g. Listen only...*/
+
 };
 
 enum ConfigParamId
@@ -478,6 +491,22 @@ enum SParamParameters
     DESIRED_DATA_PHASE_DATA_RATE    /*-2*/	    = 0x001C
 };
 
+enum HardwareInformationRequests {
+    GET_HW_SERIALNUMBER   = 0,
+    GET_HW_NAME			  = 1,
+    GET_HW_MANUFACTURER   = 2,
+    GET_HW_PRODUCTIONDATE = 3,
+    GET_HW_USEDINTERFACE  = 4
+};
+
+enum CANPhysicalLayerTypes {
+    CAN_82C251_A        	= 0x00000000, /**< High Speed CAN with 82C251*/
+    CAN_82C251_B        	= 0x00000001, /**< High Speed CAN with 82C251 (optional second tranceiver)*/
+    CAN_TJA1054          	= 0x00000002, /**< Low  Speed CAN with TJA1054*/
+    CAN_TLE6255_LS         	= 0x00000003, /**< Single Wire CAN with TLE6255*/
+    CAN_TLE6255_HS         	= 0x00000004 /**< Single Wire CAN with TLE6255*/
+};
+
 // Values for <DeviceAvailable>
 #define DEVICE_STATE_UNKNOWN  0x00
 #define DEVICE_AVAILABLE      0x01
@@ -494,6 +523,12 @@ enum SParamParameters
 #define DEVICE_CONN_UNKNOWN  0x00000000
 #define DEVICE_CONN_WIRELESS 0x00000001
 #define DEVICE_CONN_WIRED    0x00000002
+
+#define USE_DEFAULT_PASS_FILTER     1ul<<24ul // tool manufacturer specific bit to use the filters as defined in J2534 (all to pass as default)
+#define NO_INDICATIONS			    1ul<<25ul // tool manufacturer specific bit to supress the indications from ISO9141/14230/15765
+#define CAN_SINGLE_TX			    1ul<<26ul // tool manufacturer specific bit to use can single try tx
+#define CAN_LISTEN_ONLY			    1ul<<27ul // tool manufacturer specific bit to use can listen only mode
+#define NO_OBD_PIN					1ul<<28ul // tool manufacturer specific bit to suppress conection to OBD pin
 
 /**************************/
 /* ProtocolID definitions */
@@ -547,33 +582,38 @@ enum SParamParameters
 
 enum J2534Err
 {
-    STATUS_NOERROR = 0x00,
-    ERR_NOT_SUPPORTED = 0x01,
-    ERR_INVALID_CHANNEL_ID = 0x02,
-    ERR_INVALID_PROTOCOL_ID = 0x03,
-    ERR_NULL_PARAMETER = 0x04,
-    ERR_INVALID_IOCTL_VALUE = 0x05,
-    ERR_INVALID_FLAGS = 0x06,
-    ERR_FAILED = 0x07,
-    ERR_DEVICE_NOT_CONNECTED = 0x08,
-    ERR_TIMEOUT = 0x09,
-    ERR_INVALID_MSG = 0x0A,
-    ERR_INVALID_TIME_INTERVAL = 0x0B,
-    ERR_EXCEEDED_LIMIT = 0x0C,
-    ERR_INVALID_MSG_ID = 0x0D,
-    ERR_DEVICE_IN_USE = 0x0E,
-    ERR_INVALID_IOCTL_ID = 0x0F,
-    ERR_BUFFER_EMPTY = 0x10,
-    ERR_BUFFER_FULL = 0x11,
-    ERR_BUFFER_OVERFLOW = 0x12,
-    ERR_PIN_INVALID = 0x13,
-    ERR_CHANNEL_IN_USE = 0x14,
-    ERR_MSG_PROTOCOL_ID = 0x15,
-    ERR_INVALID_FILTER_ID = 0x16,
-    ERR_NO_FLOW_CONTROL = 0x17,
-    ERR_NOT_UNIQUE = 0x18,
-    ERR_INVALID_BAUDRATE = 0x19,
-    ERR_INVALID_DEVICE_ID = 0x1A,
+    STATUS_NOERROR              = ((long)0x00),    /**< Function call successful */
+    ERR_NOT_SUPPORTED           = ((long)0x01),    /**< Function not supported */
+    ERR_INVALID_CHANNEL_ID      = ((long)0x02),    /**< Invalid ChannelID value */
+    ERR_INVALID_PROTOCOL_ID     = ((long)0x03),    /**< Invalid ProtocolID value */
+    ERR_NULL_PARAMETER          = ((long)0x04),    /**< NULL pointer supplied where a valid pointer is required */
+    ERR_INVALID_IOCTL_VALUE     = ((long)0x05),    /**< Invalid Ioctl Parameter Value */
+    ERR_INVALID_FLAGS           = ((long)0x06),    /**< Invalid flag values */
+    ERR_FAILED                  = ((long)0x07),    /**< Undefined error, use PassThruGetLastError for description of error. */
+    ERR_DEVICE_NOT_CONNECTED    = ((long)0x08),    /**< unable to communicate with device*/
+    ERR_TIMEOUT                 = ((long)0x09),    /**< Timeout. No message available to read or could not read the specified number of messages. The actual number of messages read is placed in <NumMsgs> */
+    ERR_INVALID_MSG             = ((long)0x0A),    /**< Invalid message structure pointed to by pMsg (Reference Section 7 Message Structure), */
+    ERR_INVALID_TIME_INTERVAL   = ((long)0x0B),    /**< Invalid TimeInterval value */
+    ERR_EXCEEDED_LIMIT          = ((long)0x0C),    /**< Exceeded maximum number of message IDs or allocated space */
+    ERR_INVALID_MSG_ID          = ((long)0x0D),    /**< Invalid MsgID value */
+    ERR_DEVICE_IN_USE           = ((long)0x0E),    /**< Device is already in use */
+    ERR_INVALID_IOCTL_ID        = ((long)0x0F),    /**< Invalid IoctlID value */
+    ERR_BUFFER_EMPTY            = ((long)0x10),    /**< Protocol message buffer empty */
+    ERR_BUFFER_FULL             = ((long)0x11),    /**< Protocol message buffer full */
+    ERR_BUFFER_OVERFLOW         = ((long)0x12),    /**< Protocol message buffer overflow */
+    ERR_PIN_INVALID             = ((long)0x13),    /**< Invalid pin number */
+    ERR_CHANNEL_IN_USE          = ((long)0x14),    /**< Channel already in use */
+    ERR_MSG_PROTOCOL_ID         = ((long)0x15),    /**< Protocol type does not match the protocol associated with the Channel ID */
+
+    ERR_INVALID_FILTER_ID       = ((long)0x16),    /**< Invalid FilterID value */
+    ERR_NO_FLOW_CONTROL         = ((long)0x17),    /**< No matching flow control defined (ISO15765 only)*/
+    ERR_NOT_UNIQUE              = ((long)0x18),    /**< Filter pattern or flowcontrol message matches an already defined*/
+    ERR_INVALID_BAUDRATE        = ((long)0x19),    /**< Baudrate cannot be achived with the specified tolerance*/
+    ERR_INVALID_DEVICE_ID       = ((long)0x1A),    /**< Invalid Device ID value */
+    //Unused                            0x1B - 0xFFFF			Reserved for SAE 2534-1
+    //Unused							0x10000 - 0xFFFFFFFF	Reserved for SAE 2534-2
+
+
     ERR_INVALID_IOCTL_PARAM_ID /*-2*/	= 0x1E,
     ERR_VOLTAGE_IN_USE		/*-2*/	    = 0x1F,
     ERR_PIN_IN_USE          /*-2*/      = 0x20,

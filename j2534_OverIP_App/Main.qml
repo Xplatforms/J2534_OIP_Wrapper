@@ -5,11 +5,10 @@ import QtQuick.Layouts
 ApplicationWindow
 {
     id: window
-    width: 1000
-    height: 580
+    width: 1200
+    height: 720
     visible: true
     title: qsTr("J2534 OverIP App - Xplatforms")
-
 
     Action
     {
@@ -20,7 +19,7 @@ ApplicationWindow
                 stackViewMain.pop()
                 listView.currentIndex = -1
             } else {
-                drawer.open()
+                //drawer.open()
             }
         }
     }
@@ -37,7 +36,7 @@ ApplicationWindow
         icon.name: "menu"
         onTriggered: optionsMenu.open()
     }
-
+/*
     Drawer
     {
         id: drawer
@@ -112,6 +111,7 @@ ApplicationWindow
 
                         model: ListModel {
                             ListElement { title: "Main"; source: "MainPage.qml" }
+                            ListElement { title: "Test"; source: "TestPage.qml" }
                         }
 
                         ScrollIndicator.vertical: ScrollIndicator { }
@@ -120,7 +120,7 @@ ApplicationWindow
             }
         }
     }
-
+*/
     Rectangle
     {
         id: mainrect
@@ -151,8 +151,8 @@ ApplicationWindow
                 Layout.fillHeight: true
                 Layout.fillWidth: true
 
-                onCurrentItemChanged: {
-
+                onCurrentItemChanged:
+                {
                     console.log("currentItem " + currentItem.name_id)
                     if(currentItem.name_id === 2)
                     {
@@ -168,8 +168,7 @@ ApplicationWindow
                     }
                 }
 
-                initialItem: J2534Emulator{}
-
+                initialItem: J2534Cannelloni{}
 
                 //initialItem: MainPage{}
 

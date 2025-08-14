@@ -2,6 +2,9 @@
 #define J2534_H
 
 #include "j2534_OverIP_global.h"
+#include "PassThruStruct.h"
+#include "PassThruSpecial.h"
+
 
 #define PASS_THRU_WRITE_MSGS_SLEEP_MS 0
 #define PASS_THRU_READ_MSGS_SLEEP_MS 0
@@ -13,10 +16,6 @@
 #include <string.h>
 #include <stdint.h>
 
-typedef struct _SCONFIG {
-  uint32_t Parameter;
-  uint32_t Value;
-} SCONFIG;
 
 typedef struct {
   char DeviceName[80];
@@ -34,11 +33,6 @@ typedef struct {
   unsigned long *ChannelList;     /* pointer to an array of Channel IDs to be monitored */
 } SCHANNELSET;
 
-typedef struct _SCONFIG_LIST {
-  uint32_t NumOfParams;
-  SCONFIG *ConfigPtr;
-} SCONFIG_LIST;
-
 typedef struct _SPARAM
 {
   uint32_t Parameter;
@@ -48,21 +42,9 @@ typedef struct _SPARAM
 
 typedef struct _SPARAM_LIST
 {
-  uint32_t NumOfParameters;
+  unsigned long NumOfParameters;
   SPARAM * SParamPtr;
 }SPARAM_LIST;
-
-
-
-typedef struct _PASSTHRU_MSG {
-  uint32_t ProtocolID;
-  uint32_t RxStatus;
-  uint32_t TxFlags;
-  uint32_t Timestamp;
-  uint32_t DataSize;
-  uint32_t ExtraDataIndex;
-  unsigned char Data[4128];
-} PASSTHRU_MSG;
 
 
 J2534_EXPORT  _PassThruOpen(const void *pName, unsigned long *pDeviceID);

@@ -106,6 +106,7 @@ void ExPipeClient::send(const ExPipeClient::Message& msg)
     cn_cbor_map_put(cb, cn_cbor_string_create("id", &cn_errback), cn_cbor_int_create(msg.id, &cn_errback), &cn_errback);
     cn_cbor_map_put(cb, cn_cbor_string_create("type", &cn_errback), cn_cbor_int_create(msg.type, &cn_errback), &cn_errback);
     cn_cbor_map_put(cb, cn_cbor_string_create("data_type", &cn_errback), cn_cbor_int_create(msg.data_type, &cn_errback), &cn_errback);
+    cn_cbor_map_put(cb, cn_cbor_string_create("timestamp", &cn_errback), cn_cbor_int_create(msg.timestamp, &cn_errback), &cn_errback);
     cn_cbor_map_put(cb, cn_cbor_string_create("path", &cn_errback), cn_cbor_string_create(msg.path.c_str(), &cn_errback), &cn_errback);
     cn_cbor_map_put(cb, cn_cbor_string_create("message", &cn_errback), cn_cbor_string_create(msg.message.c_str(), &cn_errback), &cn_errback);
     cn_cbor_map_put(cb, cn_cbor_string_create("data", &cn_errback), cn_cbor_data_create(reinterpret_cast<const uint8_t*>(msg.data.data()), msg.data.size(), &cn_errback), &cn_errback);

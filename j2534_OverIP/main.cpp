@@ -5,6 +5,7 @@
 #include "j2534dllwrapper.h"
 #include "j2534simplelogger.h"
 #include "j2534emulator.h"
+#include "j2534cannelloniclient.h"
 #include "j2534global.h"
 
 void init_console()
@@ -38,6 +39,25 @@ std::string getClassNameFromRegistry()
 
   return "";
 }
+
+std::wstring getWrappedDllFromRegistry()
+{
+    HKEY hKey;
+    wchar_t className[MAX_PATH];
+    DWORD classNameSize = sizeof(className);
+
+    if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, L"SOFTWARE\\WOW6432Node\\PassThruSupport.04.04\\XplatformsPassThruOverIP", 0, KEY_READ, &hKey) == ERROR_SUCCESS ||
+        RegOpenKeyExW(HKEY_LOCAL_MACHINE, L"SOFTWARE\\WOW6432Node\\PassThruSupport.05.00\\XplatformsPassThruOverIP", 0, KEY_READ, &hKey) == ERROR_SUCCESS) {
+        if (RegQueryValueExW(hKey, L"WrappedDll", NULL, NULL, (LPBYTE)className, &classNameSize) == ERROR_SUCCESS) {
+            RegCloseKey(hKey);
+            return std::wstring(className);
+        }
+        RegCloseKey(hKey);
+    }
+
+    return L"";
+}
+
 
 void ProcessIdToName(DWORD processId)
 {
@@ -90,6 +110,7 @@ BOOL WINAPI DllMain(HINSTANCE hInstDll, DWORD dwReason, LPVOID lpvReserved) {
       factory->registerGenerator("ExJ2534SimpleLogger", [](){return new ExJ2534SimpleLogger();});
       factory->registerGenerator("J2534DllWrapper", [] (){ return new J2534DllWrapper(); } );
       factory->registerGenerator("J2534Emulator", [] (){ return new J2534Emulator(); });
+      factory->registerGenerator("J2534Cannelloni", [] (){ return new J2534CannelloniClient(); });
 
 
       auto className = getClassNameFromRegistry();
@@ -97,6 +118,7 @@ BOOL WINAPI DllMain(HINSTANCE hInstDll, DWORD dwReason, LPVOID lpvReserved) {
       {
           printf("SELETED INTERFACE %s\n", className.c_str());
           auto j2534 = factory->create(className);
+          if(className.compare("J2534DllWrapper") == 0)reinterpret_cast<J2534DllWrapper*>(j2534)->loadDll(getWrappedDllFromRegistry().c_str());
           if(j2534 != nullptr)J2534Global::obj()->setInterface(j2534);
       }
       else

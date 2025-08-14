@@ -4,6 +4,9 @@
 
 #include "exmessagepreprocessor.h"
 #include "exj2534emulator.h"
+#include "exj2534wrapper.h"
+#include "exj2534cannelloni.h"
+#include "qcborarray.h"
 
 
 ExMessagePreProcessor::ExMessagePreProcessor(QObject *parent):QObject{parent}
@@ -19,7 +22,7 @@ ExMessagePreProcessor * ExMessagePreProcessor::getInstance()
 
 void ExMessagePreProcessor::incommingMessageFromClient(PipeMessage msg)
 {
-    qDbg() << "[MSG]:" << msg.path << " id:" << msg.id << " type:" << msg.type << " message:" << msg.message << " data size:" << msg.data.size();
+    qDbg() << "[MSG]:" << msg.path << " id:" << msg.id << " tstamp: " << msg.timestamp << " type:" << msg.type << " message:" << msg.message << " data size:" << msg.data.size();
     if(msg.data_type == 1)
     {
         auto cb_map = QCborValue::fromCbor(msg.data).toMap();
@@ -28,8 +31,14 @@ void ExMessagePreProcessor::incommingMessageFromClient(PipeMessage msg)
 
     switch(msg.type)
     {
+    case 2:
+        ExJ2534Wrapper::getInstance()->processPipeMessage(msg);
+        break;
     case 3: // J2534Emulator
         ExJ2534Emulator::getInstance()->processPipeMessage(msg);
+        break;
+    case 4:
+        ExJ2534Cannelloni::getInstance()->processPipeMessage(msg);
         break;
     }
 

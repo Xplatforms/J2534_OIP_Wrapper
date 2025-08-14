@@ -26,11 +26,11 @@ private: \
     public: \
     template<typename... Args> \
     long FunctionName(Args... args) { \
-        EXDBG_LOG << "Function called: " #FunctionName << EXDBG_END; \
+        /*EXDBG_LOG << "Function called: " #FunctionName << EXDBG_END;*/ \
         if (m_##FunctionName) { \
             return m_##FunctionName(args...); \
     } else { \
-            EXDBG_LOG << "Function " #FunctionName " not found in DLL." << EXDBG_END; \
+            /*EXDBG_LOG << "Function " #FunctionName " not found in DLL." << EXDBG_END;*/ \
             return ERR_NOT_SUPPORTED; \
     } \
 }
@@ -135,7 +135,11 @@ private:
     PTQUEUEMSGS m_PassThruQueueMsgs;
 
 private:
-    ExPipeClient *      _pipe_client;
+    ExPipeClient *          _p_pipe;
+    std::string             p_path;
+    uint32_t                p_id;
+    uint32_t                p_type;
+    uint32_t                p_data_type;
 
 };
 

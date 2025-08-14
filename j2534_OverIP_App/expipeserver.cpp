@@ -46,7 +46,7 @@ void ExPipeServer::handleNewConnection() {
     qDbg() << "handleNewConnection";
     while (hasPendingConnections()) {
         QLocalSocket *clientSocket = nextPendingConnection();
-        connect(clientSocket, &QLocalSocket::readyRead, this, [=](){ handleSocketReadyRead(clientSocket); });
+        connect(clientSocket, &QLocalSocket::readyRead, this, [=, this](){ handleSocketReadyRead(clientSocket); });
         connect(clientSocket, &QLocalSocket::disconnected, this, &ExPipeServer::handleSocketDisconnected);
     }
 }
@@ -70,7 +70,8 @@ void ExPipeServer::processData(QLocalSocket *clientSocket) {
     QByteArray &buffer = m_buffers[clientSocket];
     qint32 &size = m_sizes[clientSocket];
 
-    while (clientSocket->bytesAvailable()) {
+    while (clientSocket->bytesAvailable())
+    {
         buffer.append(clientSocket->readAll());
 
         while ((size == 0 && buffer.size() >= 4) || (size > 0 && buffer.size() >= size)) {
@@ -79,19 +80,20 @@ void ExPipeServer::processData(QLocalSocket *clientSocket) {
                 buffer.remove(0, 4);
             }
 
-            if (size > 0 && buffer.size() >= size) {
+            if (size > 0 && buffer.size() >= size)
+            {
                 QByteArray data = buffer.mid(0, size);
                 buffer.remove(0, size);
                 size = 0;
 
                 QCborValue cborValue = QCborValue::fromCbor(data);
-                if (!cborValue.isMap()) {
+                if (!cborValue.isMap())
+                {
                     qDbg() << "Error: Data is not a CBOR map";
                     continue;
                 }
 
                 QCborMap map = cborValue.toMap();
-
                 PipeMessage msg;
 
                 if (map.contains(QLatin1String("id")) && map.value("id").isInteger()) {
@@ -104,12 +106,18 @@ void ExPipeServer::processData(QLocalSocket *clientSocket) {
                     msg.type = map.value("type").toInteger();
                 } else {
                     qDbg() << "Error: 'type' field is missing or not an integer";
-                }
+                }                
 
                 if (map.contains(QLatin1String("data_type")) && map.value("data_type").isInteger()) {
                     msg.data_type = map.value("data_type").toInteger();
                 } else {
                     qDbg() << "Error: 'type' field is missing or not an integer";
+                }
+
+                if (map.contains(QLatin1String("timestamp")) && map.value("timestamp").isInteger()) {
+                    msg.timestamp = map.value("timestamp").toInteger(0);
+                } else {
+                    qDbg() << "Error: 'timestamp' field is missing or not an integer";
                 }
 
                 if (map.contains(QLatin1String("path")) && map.value("path").isString()) {

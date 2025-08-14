@@ -119,7 +119,7 @@ long J2534Emulator::PassThruDisconnect(unsigned long ChannelID)
 
 long J2534Emulator::PassThruReadMsgs(unsigned long ChannelID, PASSTHRU_MSG *pMsg, unsigned long *pNumMsgs, unsigned long Timeout)
 {
-    printf("PassThruReadMsgs ChannelID %08x *pNumMsgs = %d Timeout = %d\n", ChannelID , *pNumMsgs, Timeout);
+    //printf("PassThruReadMsgs ChannelID %08x *pNumMsgs = %d Timeout = %d\n", ChannelID , *pNumMsgs, Timeout);
 
     // Enable flow control for VGSNAG2 ECU
     PASSTHRU_MSG fcMsg = {0};
@@ -176,7 +176,7 @@ long J2534Emulator::PassThruQueueMsgs(unsigned long ChannelID, PASSTHRU_MSG *pMs
 
     for(int i = 0; i < *pNumMsgs; i++)
     {
-        printf("[READMSG] protid %08x rxstatus %08x txflags %08x tstamp %d e_index %08x datasize %d \n [MSG]: ",
+        printf("[QUEUEMSG] protid %08x rxstatus %08x txflags %08x tstamp %d e_index %08x datasize %d \n [MSG]: ",
                pMsg[i].ProtocolID, pMsg[i].RxStatus, pMsg[i].TxFlags,
                pMsg[i].Timestamp, pMsg[i].ExtraDataIndex, pMsg[i].DataSize);
         for(int y = 0; y < pMsg[i].DataSize; y++)
@@ -205,7 +205,7 @@ long J2534Emulator::PassThruWriteMsgs(unsigned long ChannelID, const PASSTHRU_MS
 
     for(int i = 0; i < *pNumMsgs; i++)
     {
-        printf("[READMSG] protid %08x rxstatus %08x txflags %08x tstamp %d e_index %08x datasize %d \n [MSG]: ",
+        printf("[WRITEMSG] protid %08x rxstatus %08x txflags %08x tstamp %d e_index %08x datasize %d \n [MSG]: ",
                pMsg[i].ProtocolID, pMsg[i].RxStatus, pMsg[i].TxFlags,
                pMsg[i].Timestamp, pMsg[i].ExtraDataIndex, pMsg[i].DataSize);
         for(int y = 0; y < pMsg[i].DataSize; y++)
@@ -255,6 +255,9 @@ long J2534Emulator::PassThruStopMsgFilter(unsigned long ChannelID, unsigned long
 long J2534Emulator::PassThruSetProgrammingVoltage(unsigned long DeviceID, unsigned long Pin, unsigned long Voltage)
 {
     this->_p_pipe->send({this->p_id, this->p_type, 0, get_timestamp(), this->p_path, "J2534Emulator PassThruSetProgrammingVoltage called!"});
+
+    printf(" [PassThruSetProgrammingVoltage] Device %d PIN = %d  Voltage = %d Voltage = %08x\n", DeviceID, Pin, Voltage, Voltage);
+
     return STATUS_NOERROR;
 }
 
@@ -339,8 +342,6 @@ long J2534Emulator::PassThruIoctl(unsigned long ChannelID, unsigned long IoctlID
                 param_list->SParamPtr[0].Value = 987654321;
             break;
         }
-
-
     }
 
     return STATUS_NOERROR;
