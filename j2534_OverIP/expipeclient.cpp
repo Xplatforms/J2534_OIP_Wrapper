@@ -16,7 +16,7 @@ ExPipeClient::~ExPipeClient() {
 
 bool ExPipeClient::connect() {
     const int maxAttempts = 3;
-    const std::chrono::seconds sleepDuration(10);  // Sleep for 1 second between attempts
+    const std::chrono::seconds sleepDuration(10);
 
     //auto future = std::async(std::launch::async, [=]() {
         for (int attempt = 0; attempt < maxAttempts; ++attempt) {
@@ -141,7 +141,8 @@ void ExPipeClient::send(const ExPipeClient::Message& msg)
 }
 
 
-ExPipeClient::Message ExPipeClient::receive() {
+ExPipeClient::Message ExPipeClient::receive()
+{
     DWORD bytesRead;
     DWORD bytesAvailable;
 
@@ -156,22 +157,26 @@ ExPipeClient::Message ExPipeClient::receive() {
     }
 
     int size;
-    if (!ReadFile(pipe, &size, sizeof(size), &bytesRead, nullptr) || bytesRead != sizeof(size)) {
+    if (!ReadFile(pipe, &size, sizeof(size), &bytesRead, nullptr) || bytesRead != sizeof(size))
+    {
         // Handle error
     }
 
     // Check again how many bytes are available to be read
-    if (!PeekNamedPipe(pipe, NULL, 0, NULL, &bytesAvailable, NULL)) {
+    if (!PeekNamedPipe(pipe, NULL, 0, NULL, &bytesAvailable, NULL))
+    {
         // Handle error
     }
 
     // If not enough bytes are available to read the message, return an empty message
-    if (bytesAvailable < size) {
+    if (bytesAvailable < size)
+    {
         return ExPipeClient::Message{};
     }
 
     std::vector<char> buffer(size);
-    if (!ReadFile(pipe, buffer.data(), size, &bytesRead, nullptr) || bytesRead != size) {
+    if (!ReadFile(pipe, buffer.data(), size, &bytesRead, nullptr) || bytesRead != size)
+    {
         // Handle error
     }
 

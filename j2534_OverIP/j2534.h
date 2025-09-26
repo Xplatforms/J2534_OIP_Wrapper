@@ -16,6 +16,7 @@
 #include <string.h>
 #include <stdint.h>
 
+#pragma pack(push, 1)  // Ensure no padding
 
 typedef struct {
   char DeviceName[80];
@@ -45,6 +46,8 @@ typedef struct _SPARAM_LIST
   unsigned long NumOfParameters;
   SPARAM * SParamPtr;
 }SPARAM_LIST;
+
+#pragma pack(pop)
 
 
 J2534_EXPORT  _PassThruOpen(const void *pName, unsigned long *pDeviceID);

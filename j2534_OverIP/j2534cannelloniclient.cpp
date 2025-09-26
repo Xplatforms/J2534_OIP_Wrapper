@@ -15,6 +15,7 @@
 #include <atomic>
 #include <cstring>
 #include <chrono>
+#include <cctype>
 
 //20000 125кбит  3/11 пин
 //20001 500кбит  6/14 пин - Standart CAN Pins on OBD-II
@@ -35,6 +36,7 @@ struct CannelloniCanFrame {
 };
 #pragma pack(pop)
 
+int J2534CannelloniClient::scanIndex = 0;
 
 J2534CannelloniClient::J2534CannelloniClient()
 {
@@ -45,6 +47,12 @@ J2534CannelloniClient::J2534CannelloniClient()
     this->p_id = ExDbg::crc32(ExDbg::getProcessPath());
     this->p_type = 4; // 4 = J2534CannelloniClient
     this->p_data_type = 2; // 2 = cbor
+
+    if(this->getDefaultHostAndPort() != ERROR_SUCCESS)
+    {
+        this->defaultHost.append("127.0.0.1");
+        this->defaultPort = 20000;
+    }
 
     cn_cbor_errback cn_errback = {0};
     cn_cbor* cb_map_root = cn_cbor_map_create(&cn_errback);
@@ -63,7 +71,7 @@ J2534CannelloniClient::J2534CannelloniClient()
     }
     else
     {
-        this->_p_pipe->send({this->p_id, this->p_type, this->p_data_type, ts, this->p_path, "J2534CannelloniClient Verbunden!", cbor_utils::cbor_to_data(cb_map_root)});
+        this->_p_pipe->send({this->p_id, this->p_type, this->p_data_type, ts, this->p_path, "J2534CannelloniClient WSAStartup. Verbunden!", cbor_utils::cbor_to_data(cb_map_root)});
     }
 
     cn_cbor_free(cb_map_root);
@@ -71,7 +79,8 @@ J2534CannelloniClient::J2534CannelloniClient()
 
 J2534CannelloniClient::~J2534CannelloniClient()
 {
-    WSACleanup();
+    if (channelMap.empty()) WSACleanup();
+    //WSACleanup();
 }
 
 std::string J2534CannelloniClient::getIName()
@@ -81,172 +90,285 @@ std::string J2534CannelloniClient::getIName()
     return std::string(pname);
 }
 
-void J2534CannelloniClient::startReceiveThread(ChannelContext& ctx)
+long J2534CannelloniClient::getDefaultHostAndPort()
 {
-    ctx.recvThread = std::thread([this, &ctx]()
-                                 {
-                                    constexpr size_t maxPacketSize = 512; // big enough for Cannelloni packets
-                                    uint8_t buffer[maxPacketSize];
+    int retc = 0;
+    HKEY hKey;
+    if (RegOpenKeyExA(HKEY_LOCAL_MACHINE, "SOFTWARE\\WOW6432Node\\PassThruSupport.04.04\\XplatformsPassThruOverIP", 0, KEY_READ, &hKey) == ERROR_SUCCESS)
+    {
+        char host[MAX_PATH] = {0};
+        DWORD port = 0;
+        DWORD portSize = sizeof(port);
+        DWORD type = 0;
 
-                                     while (!ctx.stopRequested)
-                                     {
-                                         fd_set readfds;
-                                         FD_ZERO(&readfds);
-                                         FD_SET(ctx.sockfd, &readfds);
-
-                                         timeval timeout;
-                                         timeout.tv_sec = 0;
-                                         timeout.tv_usec = 200000; // 200 ms
-
-                                         int ret = select(0, &readfds, nullptr, nullptr, &timeout);
-                                         if (ret > 0 && FD_ISSET(ctx.sockfd, &readfds))
-                                         {
-                                             sockaddr_in fromAddr;
-                                             int fromLen = sizeof(fromAddr);
-                                             int bytesReceived = recvfrom(ctx.sockfd, reinterpret_cast<char*>(buffer), maxPacketSize, 0,
-                                                                          reinterpret_cast<sockaddr*>(&fromAddr), &fromLen);
-
-                                             if (bytesReceived > 0)
-                                             {
-                                                 std::vector<uint8_t> message(buffer, buffer + bytesReceived);
-                                                 {
-                                                     std::lock_guard<std::mutex> lock(ctx.msgQueueMutex);
-                                                     ctx.msgQueue.push(std::move(message));
-                                                 }
-                                                 ctx.msgQueueCv.notify_one();
-                                             }
-                                         }
-                                     }
-                                 });
+        DWORD hpSize = sizeof(host);
+        if (RegQueryValueExA(hKey, "DefaultHost", NULL, NULL, (LPBYTE)host, &hpSize) == ERROR_SUCCESS)
+        {
+            this->defaultHost.append(host);
+            retc++;
+        }
+        if(RegQueryValueExA(hKey,"DefaultPort", NULL, &type, (LPBYTE)&port, &portSize) == ERROR_SUCCESS)
+        {
+            this->defaultPort = port;
+            retc++;
+        }
+        RegCloseKey(hKey);
+    }
+    return retc==2?ERROR_SUCCESS:ERROR_ASSERTION_FAILURE;
 }
 
+void J2534CannelloniClient::startReceiveThread(ChannelContext& ctx)
+{
+    ctx.recvThread = std::thread([this, &ctx](){
+        constexpr size_t maxPacketSize = 1500;  // UDP MTU
+        uint8_t buffer[maxPacketSize] = {0};
 
-bool J2534CannelloniClient::popMessage(ChannelContext& ctx, std::vector<uint8_t>& outMsg, int timeoutMs)
+        while (!ctx.stopRequested.load())
+        {
+            fd_set readfds;
+            FD_ZERO(&readfds);
+            FD_SET(ctx.sockfd, &readfds);
+            timeval timeout{0, 1000};  // 100ms poll
+
+            int ret = select(static_cast<int>(ctx.sockfd + 1), &readfds, nullptr, nullptr, &timeout);
+            if (ret > 0 && FD_ISSET(ctx.sockfd, &readfds))
+            {
+                sockaddr_in fromAddr;
+                int fromLen = sizeof(fromAddr);
+                int bytesReceived = recvfrom(ctx.sockfd, reinterpret_cast<char*>(buffer), maxPacketSize, 0,
+                                             reinterpret_cast<sockaddr*>(&fromAddr), &fromLen);
+                if (bytesReceived > 0)
+                {
+                    printf("GOT UDP MSG. LEN %d\n", bytesReceived);
+                    if (bytesReceived < static_cast<int>(sizeof(CannelloniDataPacket)))
+                    {
+                        printf("PACKET to Small \n");
+                        continue;  // Assume v1
+                    }
+
+                    const CannelloniDataPacket* pkt = reinterpret_cast<const CannelloniDataPacket*>(buffer);
+                    if (pkt->version != 1)
+                    {
+                        printf("NOT CANNELLONI PACKET \n");
+                        continue;  // Assume v1
+                    }
+                    else
+                    {
+                        printf("GOT CannelloniDataPacket ver %d op_code %d seq_no %d count %d\n ", pkt->version, pkt->op_code, pkt->seq_no, pkt->count );
+                    }
+
+                    size_t frameOffset = sizeof(CannelloniDataPacket);
+                    size_t framesSize = bytesReceived - frameOffset;
+                    if (framesSize < static_cast<size_t>(pkt->count) * sizeof(CannelloniCanFrame))
+                    {
+                        printf("Packet size too small for CannelloniCanFrame. Continue. ");
+                        continue;
+                    }
+
+                    const CannelloniCanFrame* frames = reinterpret_cast<const CannelloniCanFrame*>(buffer + frameOffset);
+                    {
+                        printf("GOT Cannelloni frames %d\n", pkt->count);
+
+                        std::lock_guard<std::mutex> lock(ctx.msgQueueMutex);
+                        for (uint16_t i = 0; i < pkt->count; ++i)
+                        {
+                            const auto& f = frames[i];
+                            PASSTHRU_MSG msg{0};
+
+                            msg.RxStatus = 0;  // No errors
+                            msg.ProtocolID = CAN;
+                            msg.DataSize = 4 + f.length;
+                            if (msg.DataSize > sizeof(msg.Data))
+                            {
+                                printf("FRAME truncated\n");
+                                continue;  // Truncate
+                            }
+
+                            uint32_t canId = f.can_id;
+                            // J2534 CAN format: Byte 0 = flags (e.g., 0x08 extended), ID in 0-3
+                            msg.Data[0] = static_cast<uint8_t>(canId & 0xFF);  // Assume 11-bit for now; add flags if extended
+                            std::copy_n(reinterpret_cast<uint8_t*>(&canId) + 1, 3, msg.Data + 1);
+                            std::copy_n(f.data, f.length, msg.Data + 4);
+
+                            printf("[GOT FRAME] protid %08x rxstatus %08x txflags %08x tstamp %d e_index %08x datasize %d \n [MSG]: ",
+                                   msg.ProtocolID,msg.RxStatus, msg.TxFlags,
+                                   msg.Timestamp, msg.ExtraDataIndex, msg.DataSize);
+                            for(int y = 0; y < msg.DataSize; y++)
+                            {
+                                printf("%02x ", msg.Data[y]);
+                            }
+                            printf("\n");
+
+                            ctx.msgQueue.push(msg);
+                        }
+                    }
+                    ctx.msgQueueCv.notify_one();
+                }
+            }
+        }
+    });
+}
+
+bool J2534CannelloniClient::popParsedMsg(ChannelContext& ctx, PASSTHRU_MSG& outMsg)
 {
     std::unique_lock<std::mutex> lock(ctx.msgQueueMutex);
-
-    if (!ctx.msgQueueCv.wait_for(lock, std::chrono::milliseconds(timeoutMs), [&ctx]() {
-            return !ctx.msgQueue.empty() || ctx.stopRequested;
-        }))
-    {
-        // Timeout reached
-        return false;
-    }
-
     if (!ctx.msgQueue.empty())
     {
         outMsg = std::move(ctx.msgQueue.front());
         ctx.msgQueue.pop();
         return true;
     }
-
-    return false; // Stopped without a message
-}
-
-void J2534CannelloniClient::pushMessage(ChannelContext& ctx, const std::vector<uint8_t>& msg)
-{
+    else
     {
-        std::lock_guard<std::mutex> lock(ctx.msgQueueMutex);
-        ctx.msgQueue.push(msg);
+        printf("[popParsedMsg] msgQueue empty...\n ");
     }
-    ctx.msgQueueCv.notify_one();
+    return false;
 }
 
-long J2534CannelloniClient::PassThruOpen(const void *pName, unsigned long *pDeviceID)
+long J2534CannelloniClient::PassThruOpen(const void* pName, unsigned long* pDeviceID)
 {
     std::lock_guard<std::mutex> lock(globalMutex);
 
     cn_cbor_errback cn_errback = {0};
     cn_cbor* cb_map_root = cn_cbor_map_create(&cn_errback);
 
-    cbor_utils::map_put_int(cb_map_root, ExPipeClient::KEY_FuncName /* function */, ExPipeClient::KEY_PassThruOpen);
-    cbor_utils::map_put_string(cb_map_root, ExPipeClient::KEY_Param1 /* param_1 */, (pName == NULL?"":(const char *)pName));
-    //cbor_utils::map_put_int(cb_map_root, ExPipeClient::KEY_Param2 /* param_2 */, *pDeviceID);
+    if(pName != nullptr)printf("[PassThruOpen] %s\n", pName);
+
+    cbor_utils::map_put_int(cb_map_root, ExPipeClient::KEY_FuncName, ExPipeClient::KEY_PassThruOpen);
+    //cbor_utils::map_put_string(cb_map_root, ExPipeClient::KEY_Param1, host);
+    //cbor_utils::map_put_int(cb_map_root, ExPipeClient::KEY_Param2, *pDeviceID);
 
     if (pDeviceID == nullptr)
     {
         lastError = "pDeviceID is null";
+        lastErrorLong = J2534Err::ERR_NULL_PARAMETER;
 
-        cbor_utils::map_put_string(cb_map_root, ExPipeClient::KEY_Error, std::string("Function ").append(__FUNCTION__).append(lastError).c_str());
+        cbor_utils::map_put_string(cb_map_root, ExPipeClient::KEY_Param1, "");
+        cbor_utils::map_put_int(cb_map_root, ExPipeClient::KEY_Param2, 0);
+        cbor_utils::map_put_string(cb_map_root, ExPipeClient::KEY_Error, std::string("Function ").append(__FUNCTION__).append(" -> ").append(lastError).c_str());
         this->_p_pipe->send({this->p_id, this->p_type, this->p_data_type, get_timestamp(), this->p_path, "PassThruOpen", cbor_utils::cbor_to_data(cb_map_root)});
         cn_cbor_free(cb_map_root);
-        return J2534Err::ERR_NULL_PARAMETER;
+
+        return lastErrorLong;
     }
 
-    static const int numPorts = 3;
-    static const unsigned long basePort = 20000;
-
-    const char *host = "127.0.0.1";
+    unsigned long port = this->defaultPort;
+    const char* host = "127.0.0.1";
     if (pName != nullptr)
     {
-        const char* const* pHostStr = reinterpret_cast<const char* const*>(pName);
-        if (pHostStr && *pHostStr && strlen(*pHostStr) > 0)
-            host = *pHostStr;
+        if(isValidHostString(static_cast<const char*>(pName)))host = static_cast<const char*>(pName);
+        else host = this->defaultHost.data();
+        std::string tmpPort((const char *)pName);
+        if(tmpPort.contains("20000"))port = 20000;
+        else if(tmpPort.contains("20001"))port = 20001;
+        else if(tmpPort.contains("20002"))port = 20002;
     }
 
-    if (channelMap.size() >= numPorts)
+    cbor_utils::map_put_string(cb_map_root, ExPipeClient::KEY_Param1, host);
+    //cbor_utils::map_put_int(cb_map_root, ExPipeClient::KEY_Param2, *pDeviceID);
+
+    static constexpr int numPorts = 3;
+    static constexpr unsigned long basePort = 20000;
+
+    if (channelMap.size() >= static_cast<size_t>(numPorts))
     {
         lastError = "All virtual devices are already opened";
-        cbor_utils::map_put_string(cb_map_root, ExPipeClient::KEY_Error, std::string("Function ").append(__FUNCTION__).append(lastError).c_str());
+        lastErrorLong = J2534Err::ERR_DEVICE_IN_USE;
+
+        cbor_utils::map_put_string(cb_map_root, ExPipeClient::KEY_Param1, "");
+        cbor_utils::map_put_int(cb_map_root, ExPipeClient::KEY_Param2, 0);
+        cbor_utils::map_put_string(cb_map_root, ExPipeClient::KEY_Error, std::string("Function ").append(__FUNCTION__).append(" -> ").append(lastError).c_str());
         this->_p_pipe->send({this->p_id, this->p_type, this->p_data_type, get_timestamp(), this->p_path, "PassThruOpen", cbor_utils::cbor_to_data(cb_map_root)});
         cn_cbor_free(cb_map_root);
-        return J2534Err::ERR_DEVICE_IN_USE;
+
+        return lastErrorLong;
     }
 
-    for (int i = 0; i < numPorts; i++)
+    auto candidate = channelMap.find(port);
+    if(candidate != channelMap.end())
     {
-        unsigned long port = basePort + i;
-        if (channelMap.find(port) == channelMap.end())
-        {
-            ChannelContext ctx;
-            ctx.sockfd = socket(AF_INET, SOCK_DGRAM, 0);
-            if (ctx.sockfd < 0)
-            {
-                lastError = "Socket creation failed";
-                cbor_utils::map_put_string(cb_map_root, ExPipeClient::KEY_Error, std::string("Function ").append(__FUNCTION__).append(lastError).c_str());
-                this->_p_pipe->send({this->p_id, this->p_type, this->p_data_type, get_timestamp(), this->p_path, "PassThruOpen", cbor_utils::cbor_to_data(cb_map_root)});
-                cn_cbor_free(cb_map_root);
-                return J2534Err::ERR_DEVICE_NOT_CONNECTED;
-            }
+        printf("ChannelMap already contains port %d\n", port);
+        lastError = "No free ports";
+        lastErrorLong = J2534Err::ERR_DEVICE_IN_USE;
 
-            memset(&ctx.targetAddr, 0, sizeof(ctx.targetAddr));
-            ctx.targetAddr.sin_family = AF_INET;
-            ctx.targetAddr.sin_port = htons(static_cast<uint16_t>(port));
-            if(InetPtonA(AF_INET, host, &ctx.targetAddr.sin_addr) != 1)
-            {
-                closesocket(ctx.sockfd);
-                lastError = "Invalid IP address";
-                cbor_utils::map_put_string(cb_map_root, ExPipeClient::KEY_Error, std::string("Function ").append(__FUNCTION__).append(lastError).c_str());
-                this->_p_pipe->send({this->p_id, this->p_type, this->p_data_type, get_timestamp(), this->p_path, "PassThruOpen", cbor_utils::cbor_to_data(cb_map_root)});
-                cn_cbor_free(cb_map_root);
-                return J2534Err::ERR_INVALID_DEVICE_ID;
-            }
+        cbor_utils::map_put_string(cb_map_root, ExPipeClient::KEY_Param1, host);
+        cbor_utils::map_put_int(cb_map_root, ExPipeClient::KEY_Param2, port);
+        cbor_utils::map_put_string(cb_map_root, ExPipeClient::KEY_Error, std::string("Function ").append(__FUNCTION__).append(" -> ").append(lastError).c_str());
+        this->_p_pipe->send({this->p_id, this->p_type, this->p_data_type, get_timestamp(), this->p_path, "PassThruOpen", cbor_utils::cbor_to_data(cb_map_root)});
+        cn_cbor_free(cb_map_root);
 
-            channelMap[port] = std::move(ctx);
-            ChannelContext& refCtx = channelMap[port];
-            startReceiveThread(refCtx);
-
-            *pDeviceID = port;            
-        }
+        return lastErrorLong;
     }
 
-    printf("pDeviceID %d\n", *pDeviceID );
+    // Create UDP socket
+    SOCKET sockfd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if (sockfd == INVALID_SOCKET)
+    {
+        lastError = "Socket creation failed: " + std::to_string(WSAGetLastError());
+        lastErrorLong = J2534Err::ERR_DEVICE_NOT_CONNECTED;
 
-    cbor_utils::map_put_int(cb_map_root, ExPipeClient::KEY_Param2 /* param_2 */, *pDeviceID);
-    cbor_utils::map_put_int(cb_map_root, ExPipeClient::KEY_RETVAL_LONG, J2534Err::STATUS_NOERROR);
+        cbor_utils::map_put_string(cb_map_root, ExPipeClient::KEY_Param1, host);
+        cbor_utils::map_put_int(cb_map_root, ExPipeClient::KEY_Param2, port);
+        cbor_utils::map_put_string(cb_map_root, ExPipeClient::KEY_Error, std::string("Function ").append(__FUNCTION__).append(" -> ").append(lastError).c_str());
+        this->_p_pipe->send({this->p_id, this->p_type, this->p_data_type, get_timestamp(), this->p_path, "PassThruOpen", cbor_utils::cbor_to_data(cb_map_root)});
+        cn_cbor_free(cb_map_root);
+
+        return lastErrorLong;
+    }
+
+    // Bind to local 0.0.0.0:port (wildcard)
+    ChannelContext ctx;
+    ctx.sockfd = sockfd;
+    ctx.localAddr.sin_family = AF_INET;
+    ctx.localAddr.sin_addr.s_addr = INADDR_ANY;
+    ctx.localAddr.sin_port = htons(static_cast<uint16_t>(port));
+    if (bind(sockfd, reinterpret_cast<sockaddr*>(&ctx.localAddr), sizeof(ctx.localAddr)) == SOCKET_ERROR)
+    {
+        closesocket(sockfd);
+        lastError = "Bind failed: " + std::to_string(WSAGetLastError());
+        lastErrorLong = J2534Err::ERR_DEVICE_NOT_CONNECTED;
+
+        cbor_utils::map_put_string(cb_map_root, ExPipeClient::KEY_Param1, host);
+        cbor_utils::map_put_int(cb_map_root, ExPipeClient::KEY_Param2, port);
+        cbor_utils::map_put_string(cb_map_root, ExPipeClient::KEY_Error, std::string("Function ").append(__FUNCTION__).append(" -> ").append(lastError).c_str());
+        this->_p_pipe->send({this->p_id, this->p_type, this->p_data_type, get_timestamp(), this->p_path, "PassThruOpen", cbor_utils::cbor_to_data(cb_map_root)});
+        cn_cbor_free(cb_map_root);
+
+        return lastErrorLong;
+    }
+
+    // Set target remote host:port
+    ctx.targetAddr = ctx.localAddr;  // Copy family/port
+
+    if (InetPtonA(AF_INET, host, &ctx.targetAddr.sin_addr) != 1)
+    {
+        closesocket(sockfd);
+        lastError = "Invalid host IP: " + std::string(host);
+        lastErrorLong = J2534Err::ERR_INVALID_DEVICE_ID;
+
+        cbor_utils::map_put_string(cb_map_root, ExPipeClient::KEY_Param1, host);
+        cbor_utils::map_put_int(cb_map_root, ExPipeClient::KEY_Param2, port);
+        cbor_utils::map_put_string(cb_map_root, ExPipeClient::KEY_Error, std::string("Function ").append(__FUNCTION__).append(" -> ").append(lastError).c_str());
+        this->_p_pipe->send({this->p_id, this->p_type, this->p_data_type, get_timestamp(), this->p_path, "PassThruOpen", cbor_utils::cbor_to_data(cb_map_root)});
+        cn_cbor_free(cb_map_root);
+
+        return lastErrorLong;
+    }
+
+    channelMap[port] = std::move(ctx);
+    ChannelContext& refCtx = channelMap[port];
+    startReceiveThread(refCtx);  // Now parses into PASSTHRU_MSG
+
+    *pDeviceID = port;
+    lastErrorLong = J2534Err::STATUS_NOERROR;
+
+    cbor_utils::map_put_string(cb_map_root, ExPipeClient::KEY_Param1, host);
+    cbor_utils::map_put_int(cb_map_root, ExPipeClient::KEY_Param2, *pDeviceID);
+    cbor_utils::map_put_int(cb_map_root, ExPipeClient::KEY_RETVAL_LONG, lastErrorLong);
     this->_p_pipe->send({this->p_id, this->p_type, this->p_data_type, get_timestamp(), this->p_path, "PassThruOpen", cbor_utils::cbor_to_data(cb_map_root)});
     cn_cbor_free(cb_map_root);
 
-
-    return J2534Err::STATUS_NOERROR;
-
-    /*
-    lastError = "No free virtual device ports available";
-    cbor_utils::map_put_string(cb_map_root, ExPipeClient::KEY_Error, std::string("Function ").append(__FUNCTION__).append(lastError).c_str());
-    this->_p_pipe->send({this->p_id, this->p_type, this->p_data_type, get_timestamp(), this->p_path, "PassThruOpen", cbor_utils::cbor_to_data(cb_map_root)});
-    cn_cbor_free(cb_map_root);
-    return J2534Err::ERR_DEVICE_IN_USE;
-    */
+    return lastErrorLong;
 }
 
 long J2534CannelloniClient::PassThruClose(unsigned long DeviceID)
@@ -265,7 +387,7 @@ long J2534CannelloniClient::PassThruClose(unsigned long DeviceID)
     if (it == channelMap.end())
     {
         lastError = "DeviceID not found";
-        cbor_utils::map_put_string(cb_map_root, ExPipeClient::KEY_Error, std::string("Function ").append(__FUNCTION__).append(lastError).c_str());
+        cbor_utils::map_put_string(cb_map_root, ExPipeClient::KEY_Error, std::string("Function ").append(__FUNCTION__).append(" -> ").append(lastError).c_str());
         this->_p_pipe->send({this->p_id, this->p_type, this->p_data_type, get_timestamp(), this->p_path, "PassThruClose", cbor_utils::cbor_to_data(cb_map_root)});
         cn_cbor_free(cb_map_root);
         return ERR_INVALID_DEVICE_ID;
@@ -280,14 +402,12 @@ long J2534CannelloniClient::PassThruClose(unsigned long DeviceID)
     dummyAddr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
     sendto(ctx.sockfd, "", 1, 0, (sockaddr*)&dummyAddr, sizeof(dummyAddr));
 
-    ctx.stopRequested = true;
-    if (ctx.recvThread.joinable())
-        ctx.recvThread.join();
+    ctx.stopRequested = true;   
+    if (ctx.recvThread.joinable())ctx.recvThread.join();
 
     closesocket(ctx.sockfd);
 
     channelMap.erase(it);
-
 
     cbor_utils::map_put_int(cb_map_root, ExPipeClient::KEY_RETVAL_LONG, J2534Err::STATUS_NOERROR);
     this->_p_pipe->send({this->p_id, this->p_type, this->p_data_type, get_timestamp(), this->p_path, "PassThruClose", cbor_utils::cbor_to_data(cb_map_root)});
@@ -295,40 +415,53 @@ long J2534CannelloniClient::PassThruClose(unsigned long DeviceID)
     return retval;
 }
 
-long J2534CannelloniClient::PassThruConnect(unsigned long DeviceID, unsigned long ProtocolID, unsigned long Flags, unsigned long Baudrate, unsigned long *pChannelID)
-{
-    switch(ProtocolID)
-    {
-    //K-LINE
-    case ISO9141:
-        *pChannelID = 1;
-        break;
-    //CAN
-    case CAN:
-        *pChannelID = 2;
-        break;
-    //ISO-TP
-    case ISO15765:
-        *pChannelID = 3;
-        break;
-    }
+long J2534CannelloniClient::PassThruConnect(unsigned long DeviceID, unsigned long ProtocolID, unsigned long Flags, unsigned long Baudrate, unsigned long* pChannelID) {
+    std::lock_guard<std::mutex> lock(globalMutex);
 
+    printf("[PassThruConnect] devID: %d ProtID: %d Flags: %d Baud: %d\n", DeviceID, ProtocolID, Flags, Baudrate);
 
     cn_cbor_errback cn_errback = {0};
     cn_cbor* cb_map_root = cn_cbor_map_create(&cn_errback);
+    cbor_utils::map_put_int(cb_map_root, ExPipeClient::KEY_FuncName, ExPipeClient::KEY_PassThruConnect);
+    cbor_utils::map_put_int(cb_map_root, ExPipeClient::KEY_Param1, DeviceID);
+    cbor_utils::map_put_int(cb_map_root, ExPipeClient::KEY_Param2, ProtocolID);
+    cbor_utils::map_put_int(cb_map_root, ExPipeClient::KEY_Param3, Flags);
+    cbor_utils::map_put_int(cb_map_root, ExPipeClient::KEY_Param4, Baudrate);
 
-    cbor_utils::map_put_int(cb_map_root, ExPipeClient::KEY_FuncName /* function */, ExPipeClient::KEY_PassThruConnect);
-    cbor_utils::map_put_int(cb_map_root, ExPipeClient::KEY_Param1 /* param_1 */, DeviceID);
-    cbor_utils::map_put_int(cb_map_root, ExPipeClient::KEY_Param2 /* param_1 */, ProtocolID);
-    cbor_utils::map_put_int(cb_map_root, ExPipeClient::KEY_Param3 /* param_1 */, Flags);
-    cbor_utils::map_put_int(cb_map_root, ExPipeClient::KEY_Param4 /* param_1 */, Baudrate);
-    cbor_utils::map_put_int(cb_map_root, ExPipeClient::KEY_Param5 /* param_1 */, *pChannelID);
+    auto it = channelMap.find(DeviceID);
+    if (it == channelMap.end())
+    {
+        lastError = "Invalid DeviceID";
+        lastErrorLong = J2534Err::ERR_INVALID_DEVICE_ID;
+        cbor_utils::map_put_int(cb_map_root, ExPipeClient::KEY_Param5, DeviceID);
+        cbor_utils::map_put_string(cb_map_root, ExPipeClient::KEY_Error, std::string("Function ").append(__FUNCTION__).append(" -> ").append(lastError).c_str());
+        this->_p_pipe->send({this->p_id, this->p_type, this->p_data_type, get_timestamp(), this->p_path, "PassThruConnect", cbor_utils::cbor_to_data(cb_map_root)});
+        cn_cbor_free(cb_map_root);
+        return lastErrorLong;
+    }
 
+    // Only CAN and CAN_PS supported
+    if (ProtocolID != CAN && ProtocolID != CAN_PS)
+    {
+        lastError = "Unsupported protocol";
+        lastErrorLong = J2534Err::ERR_INVALID_PROTOCOL_ID;
+        cbor_utils::map_put_int(cb_map_root, ExPipeClient::KEY_Param5, DeviceID);
+        cbor_utils::map_put_string(cb_map_root, ExPipeClient::KEY_Error, std::string("Function ").append(__FUNCTION__).append(" -> ").append(lastError).c_str());
+        this->_p_pipe->send({this->p_id, this->p_type, this->p_data_type, get_timestamp(), this->p_path, "PassThruConnect", cbor_utils::cbor_to_data(cb_map_root)});
+        cn_cbor_free(cb_map_root);
+        return lastErrorLong;
+    }
+
+    *pChannelID = DeviceID;  // Single channel == device
+    lastErrorLong = J2534Err::STATUS_NOERROR;
+
+
+    cbor_utils::map_put_int(cb_map_root, ExPipeClient::KEY_Param5, *pChannelID);
+    cbor_utils::map_put_int(cb_map_root, ExPipeClient::KEY_RETVAL_LONG, lastErrorLong);
     this->_p_pipe->send({this->p_id, this->p_type, this->p_data_type, get_timestamp(), this->p_path, "PassThruConnect", cbor_utils::cbor_to_data(cb_map_root)});
-
     cn_cbor_free(cb_map_root);
 
-    return STATUS_NOERROR;
+    return lastErrorLong;
 }
 
 long J2534CannelloniClient::PassThruDisconnect(unsigned long ChannelID)
@@ -350,9 +483,10 @@ long J2534CannelloniClient::PassThruDisconnect(unsigned long ChannelID)
     return retval;
 }
 
-
-long J2534CannelloniClient::PassThruReadMsgs(unsigned long ChannelID, PASSTHRU_MSG *pMsg, unsigned long *pNumMsgs, unsigned long Timeout)
+long J2534CannelloniClient::PassThruReadMsgs(unsigned long ChannelID, PASSTHRU_MSG* pMsg, unsigned long* pNumMsgs, unsigned long Timeout)
 {
+    std::lock_guard<std::mutex> lock(globalMutex);
+
     long retval = J2534Err::STATUS_NOERROR;
 
     cn_cbor_errback cn_errback = {0};
@@ -363,119 +497,84 @@ long J2534CannelloniClient::PassThruReadMsgs(unsigned long ChannelID, PASSTHRU_M
     //cbor_utils::map_put_int(cb_map_root, ExPipeClient::KEY_Param2, 0);
     cbor_utils::map_put_int(cb_map_root, ExPipeClient::KEY_Param3, *pNumMsgs);
     cbor_utils::map_put_int(cb_map_root, ExPipeClient::KEY_Param4, Timeout);
-    cbor_utils::map_put_int(cb_map_root, ExPipeClient::KEY_RX_TX, 0);
+    //cbor_utils::map_put_int(cb_map_root, ExPipeClient::KEY_RX_TX, 0);
 
-    if (pMsg == nullptr || pNumMsgs == nullptr)
-    {
-        lastError = "Null pointer for pMsg or pNumMsgs";
-        cbor_utils::map_put_int(cb_map_root, ExPipeClient::KEY_Param2, 0);
-        cbor_utils::map_put_string(cb_map_root, ExPipeClient::KEY_Error, std::string("Function ").append(__FUNCTION__).append(lastError).c_str());
-        this->_p_pipe->send({this->p_id, this->p_type, this->p_data_type, get_timestamp(), this->p_path, "PassThruReadMsgs", cbor_utils::cbor_to_data(cb_map_root)});
-        cn_cbor_free(cb_map_root);
-        return J2534Err::ERR_NULL_PARAMETER;
-    }
-
-    std::lock_guard<std::mutex> lock(globalMutex);
     auto it = channelMap.find(ChannelID);
     if (it == channelMap.end())
     {
         lastError = "Invalid ChannelID";
+        lastErrorLong = J2534Err::ERR_INVALID_CHANNEL_ID;
+
+        printf("[PassThruReadMsgs] Invalid ChannelID %d\n", ChannelID);
+
         cbor_utils::map_put_int(cb_map_root, ExPipeClient::KEY_Param2, 0);
-        cbor_utils::map_put_string(cb_map_root, ExPipeClient::KEY_Error, std::string("Function ").append(__FUNCTION__).append(lastError).c_str());
+        cbor_utils::map_put_int(cb_map_root, ExPipeClient::KEY_RX_TX, 0);
+        cbor_utils::map_put_string(cb_map_root, ExPipeClient::KEY_Error, std::string("Function ").append(__FUNCTION__).append(" -> ").append(lastError).c_str());
         this->_p_pipe->send({this->p_id, this->p_type, this->p_data_type, get_timestamp(), this->p_path, "PassThruReadMsgs", cbor_utils::cbor_to_data(cb_map_root)});
         cn_cbor_free(cb_map_root);
-        return J2534Err::ERR_INVALID_CHANNEL_ID;
+
+        return lastErrorLong;
     }
 
     ChannelContext& ctx = it->second;
+    unsigned long readCount = 0;
+    auto startTime = std::chrono::steady_clock::now();
 
-    std::unique_lock<std::mutex> queueLock(ctx.msgQueueMutex);
-    if (ctx.msgQueue.empty())
+    //if Timeout nr set, just read msgs and return
+    if(Timeout <= 0)
     {
-        // Wait for data or timeout
-        if (!ctx.msgQueueCv.wait_for(queueLock, std::chrono::milliseconds(Timeout), [&ctx]{ return !ctx.msgQueue.empty(); }))
+        while (readCount < *pNumMsgs)
         {
-            *pNumMsgs = 0;
+            PASSTHRU_MSG msg;
+            if (popParsedMsg(ctx, msg))
+            {
+                if (pMsg) pMsg[readCount] = msg;  // Copy
+                ++readCount;
+            }
+            else
+            {
+                break;
+            }
+        }
+    }
+    else
+    {
+        while (readCount < *pNumMsgs)
+        {
+            PASSTHRU_MSG msg;
+            auto timeoutLeft = Timeout - std::chrono::duration_cast<std::chrono::milliseconds>(
+                                             std::chrono::steady_clock::now() - startTime).count();
+            if (timeoutLeft <= 0)
+            {
+                printf("[PassThruReadMsgs] timeout %d \n", Timeout);
+                break;
+            }
 
-            cbor_utils::map_put_int(cb_map_root, ExPipeClient::KEY_Param2, 0);
-            cbor_utils::map_put_string(cb_map_root, ExPipeClient::KEY_Error, std::string("Function ").append(__FUNCTION__).append(lastError).c_str());
-            this->_p_pipe->send({this->p_id, this->p_type, this->p_data_type, get_timestamp(), this->p_path, "PassThruReadMsgs", cbor_utils::cbor_to_data(cb_map_root)});
-            cn_cbor_free(cb_map_root);
-            return J2534Err::ERR_TIMEOUT;
+            if (popParsedMsg(ctx, msg))
+            {
+                if (pMsg) pMsg[readCount] = msg;  // Copy
+                ++readCount;
+            }
+            else
+            {
+                //if (ctx.stopRequested.load()) break;
+                break;
+            }
         }
     }
 
-    unsigned long maxMsgs = *pNumMsgs;
-    unsigned long msgsRead = 0;
-
-    while (msgsRead < maxMsgs && !ctx.msgQueue.empty())
-    {
-        const std::vector<uint8_t>& packet = ctx.msgQueue.front();
-
-        if (packet.size() < sizeof(CannelloniDataPacket))
-        {
-            lastError = "Cannelloni packet too short";
-            cbor_utils::map_put_int(cb_map_root, ExPipeClient::KEY_Param2, 0);
-            cbor_utils::map_put_string(cb_map_root, ExPipeClient::KEY_Error, std::string("Function ").append(__FUNCTION__).append(lastError).c_str());
-            this->_p_pipe->send({this->p_id, this->p_type, this->p_data_type, get_timestamp(), this->p_path, "PassThruReadMsgs", cbor_utils::cbor_to_data(cb_map_root)});
-            cn_cbor_free(cb_map_root);
-            return J2534Err::ERR_INVALID_MSG;
-        }
-
-        // Parse Cannelloni header
-        const CannelloniDataPacket* header = reinterpret_cast<const CannelloniDataPacket*>(packet.data());
-        size_t offset = sizeof(CannelloniDataPacket);
-
-        // 'count' field is number of CAN frames inside, network byte order?
-        uint16_t canFrameCount = ntohs(header->count); // assuming network order
-
-        // Validate packet length
-        size_t expectedLength = sizeof(CannelloniDataPacket) + canFrameCount * sizeof(CannelloniCanFrame);
-        if (packet.size() < expectedLength)
-        {
-            lastError = "Cannelloni packet length mismatch";
-            cbor_utils::map_put_int(cb_map_root, ExPipeClient::KEY_Param2, 0);
-            cbor_utils::map_put_string(cb_map_root, ExPipeClient::KEY_Error, std::string("Function ").append(__FUNCTION__).append(lastError).c_str());
-            this->_p_pipe->send({this->p_id, this->p_type, this->p_data_type, get_timestamp(), this->p_path, "PassThruReadMsgs", cbor_utils::cbor_to_data(cb_map_root)});
-            cn_cbor_free(cb_map_root);
-            return J2534Err::ERR_INVALID_MSG;
-        }
-
-        // Extract CAN frames one by one
-        for (uint16_t i = 0; i < canFrameCount && msgsRead < maxMsgs; i++)
-        {
-            const CannelloniCanFrame* frame = reinterpret_cast<const CannelloniCanFrame*>(packet.data() + offset);
-
-            // Fill PASSTHRU_MSG from CannelloniCanFrame
-            pMsg[msgsRead].ProtocolID = ISO15765; // Use appropriate protocol id if known
-            pMsg[msgsRead].RxStatus = 0;   // Fill if needed, e.g. CAN flags
-            pMsg[msgsRead].TxFlags = ISO15765_FRAME_PAD;    // Fill if transmit flags needed
-            pMsg[msgsRead].Timestamp = 0;  // Could be filled if you keep track of timestamp elsewhere
-
-            // DataSize is length, but limit to MAX_CAN_FRAME_DATA_LEN to be safe
-            pMsg[msgsRead].DataSize = (frame->length > MAX_CAN_FRAME_DATA_LEN) ? MAX_CAN_FRAME_DATA_LEN : frame->length;
-            pMsg[msgsRead].ExtraDataIndex = 0; // no extra data in this example
-
-            // Copy CAN frame data payload
-            memcpy(pMsg[msgsRead].Data, frame->data, pMsg[msgsRead].DataSize);
-
-            ++msgsRead;
-            offset += sizeof(CannelloniCanFrame);
-        }
-
-        ctx.msgQueue.pop();
-    }
-    *pNumMsgs = msgsRead;
+    *pNumMsgs = readCount;
+    lastErrorLong = (readCount > 0 || *pNumMsgs == 0) ? J2534Err::STATUS_NOERROR : J2534Err::ERR_BUFFER_EMPTY;
 
     cbor_utils::map_put_PASSTHRU_MSG(cb_map_root, ExPipeClient::KEY_Param2, *pNumMsgs, pMsg);
-    cbor_utils::map_put_int(cb_map_root, ExPipeClient::KEY_Param3, *pNumMsgs);
-    cbor_utils::map_put_int(cb_map_root, ExPipeClient::KEY_Param4, Timeout);
+    //cbor_utils::map_put_int(cb_map_root, ExPipeClient::KEY_Param3, *pNumMsgs);
+    //cbor_utils::map_put_int(cb_map_root, ExPipeClient::KEY_Param4, Timeout);
     cbor_utils::map_put_int(cb_map_root, ExPipeClient::KEY_RX_TX, 1);
     cbor_utils::map_put_int(cb_map_root, ExPipeClient::KEY_RETVAL_LONG, retval);
     this->_p_pipe->send({this->p_id, this->p_type, this->p_data_type, get_timestamp(), this->p_path, "PassThruReadMsgs", cbor_utils::cbor_to_data(cb_map_root)});
     cn_cbor_free(cb_map_root);
 
-    return J2534Err::STATUS_NOERROR;
+    return lastErrorLong;
 }
 
 long J2534CannelloniClient::PassThruQueueMsgs(unsigned long ChannelID, PASSTHRU_MSG *pMsg, unsigned long *pNumMsgs)
@@ -498,25 +597,93 @@ long J2534CannelloniClient::PassThruQueueMsgs(unsigned long ChannelID, PASSTHRU_
     return retval;
 }
 
-long J2534CannelloniClient::PassThruWriteMsgs(unsigned long ChannelID, const PASSTHRU_MSG *pMsg, unsigned long *pNumMsgs, unsigned long Timeout)
-{
+long J2534CannelloniClient::PassThruWriteMsgs(unsigned long ChannelID, const PASSTHRU_MSG* pMsg, unsigned long* pNumMsgs, unsigned long Timeout) {
+    std::lock_guard<std::mutex> lock(globalMutex);
+
     cn_cbor_errback cn_errback = {0};
     cn_cbor* cb_map_root = cn_cbor_map_create(&cn_errback);
 
-    for(int i = 0; i < *pNumMsgs; i++)
-    {
-        printf("[WRITEMSG] protid %08x rxstatus %08x txflags %08x tstamp %d e_index %08x datasize %d \n [MSG]: ",
-               pMsg[i].ProtocolID, pMsg[i].RxStatus, pMsg[i].TxFlags,
-               pMsg[i].Timestamp, pMsg[i].ExtraDataIndex, pMsg[i].DataSize);
-        for(int y = 0; y < pMsg[i].DataSize; y++)
-        {
-            printf("%02x ", pMsg[i].Data[y]);
-        }
-        printf("\n");
-    }
-
     cbor_utils::map_put_int(cb_map_root, ExPipeClient::KEY_FuncName /* function */, ExPipeClient::KEY_PassThruWriteMsgs);
     cbor_utils::map_put_int(cb_map_root, ExPipeClient::KEY_Param1 /* param_1 */, ChannelID);
+    //cbor_utils::map_put_int(cb_map_root, ExPipeClient::KEY_Param2, 0);
+    cbor_utils::map_put_int(cb_map_root, ExPipeClient::KEY_Param3, *pNumMsgs);
+    cbor_utils::map_put_int(cb_map_root, ExPipeClient::KEY_Param4, Timeout);
+    cbor_utils::map_put_int(cb_map_root, ExPipeClient::KEY_RX_TX, 0);
+
+    auto it = channelMap.find(ChannelID);
+    if (it == channelMap.end())
+    {
+        lastError = "Invalid ChannelID";
+        lastErrorLong = J2534Err::ERR_INVALID_CHANNEL_ID;
+
+        cbor_utils::map_put_int(cb_map_root, ExPipeClient::KEY_Param2, 0);
+        cbor_utils::map_put_string(cb_map_root, ExPipeClient::KEY_Error, std::string("Function ").append(__FUNCTION__).append(" -> ").append(lastError).c_str());
+        this->_p_pipe->send({this->p_id, this->p_type, this->p_data_type, get_timestamp(), this->p_path, "PassThruWriteMsgs", cbor_utils::cbor_to_data(cb_map_root)});
+        cn_cbor_free(cb_map_root);
+        return lastErrorLong;
+    }
+
+    ChannelContext& ctx = it->second;
+    unsigned long written = 0;
+
+    for (; written < *pNumMsgs; ++written)
+    {
+        const auto& srcMsg = pMsg[written];
+
+        printf("[WRITEMSG] protid %08x rxstatus %08x txflags %08x tstamp %d e_index %08x datasize %d \n [MSG]: ",
+               srcMsg.ProtocolID,srcMsg.RxStatus, srcMsg.TxFlags,
+               srcMsg.Timestamp, srcMsg.ExtraDataIndex, srcMsg.DataSize);
+        for(int y = 0; y < srcMsg.DataSize; y++)
+        {
+            printf("%02x ", srcMsg.Data[y]);
+        }
+        printf("\n");
+
+
+        if ((srcMsg.ProtocolID != CAN && srcMsg.ProtocolID != CAN_PS) || srcMsg.DataSize < 4 || srcMsg.DataSize > 4 + MAX_CAN_FRAME_DATA_LEN)
+        {
+            lastError = "Invalid CAN msg format";
+            lastErrorLong = J2534Err::ERR_BUFFER_OVERFLOW;
+            cbor_utils::map_put_int(cb_map_root, ExPipeClient::KEY_Param2, 0);
+            cbor_utils::map_put_string(cb_map_root, ExPipeClient::KEY_Error, std::string("Function ").append(__FUNCTION__).append(" -> ").append(lastError).c_str());
+            this->_p_pipe->send({this->p_id, this->p_type, this->p_data_type, get_timestamp(), this->p_path, "PassThruWriteMsgs", cbor_utils::cbor_to_data(cb_map_root)});
+            cn_cbor_free(cb_map_root);
+            break;
+        }
+
+        // Build frame
+        CannelloniCanFrame frame{};
+        uint32_t canId;
+        std::copy_n(srcMsg.Data, 4, reinterpret_cast<uint8_t*>(&canId));  // Extract ID (ignore flags for now)
+        frame.can_id = canId;
+        frame.length = static_cast<uint8_t>(srcMsg.DataSize - 4);
+        std::copy_n(srcMsg.Data + 4, frame.length, frame.data);
+
+        // Build packet (single frame)
+        CannelloniDataPacket pkt{1, 1, ctx.seqNo.fetch_add(1), 1};  // version=1, op=1 (TX), seq, count=1
+        std::array<uint8_t, sizeof(pkt) + sizeof(frame)> buffer{};
+        std::copy_n(reinterpret_cast<uint8_t*>(&pkt), sizeof(pkt), buffer.begin());
+        std::copy_n(reinterpret_cast<uint8_t*>(&frame), sizeof(frame), buffer.begin() + sizeof(pkt));
+
+        // Send
+        int sent = sendto(ctx.sockfd, reinterpret_cast<const char*>(buffer.data()), buffer.size(), 0,
+                          reinterpret_cast<sockaddr*>(&ctx.targetAddr), sizeof(ctx.targetAddr));
+
+        if (sent != static_cast<int>(buffer.size()))
+        {
+            lastError = "Send failed: " + std::to_string(WSAGetLastError());
+            lastErrorLong = J2534Err::ERR_FAILED;
+            cbor_utils::map_put_int(cb_map_root, ExPipeClient::KEY_Param2, 0);
+            cbor_utils::map_put_string(cb_map_root, ExPipeClient::KEY_Error, std::string("Function ").append(__FUNCTION__).append(" -> ").append(lastError).c_str());
+            this->_p_pipe->send({this->p_id, this->p_type, this->p_data_type, get_timestamp(), this->p_path, "PassThruWriteMsgs", cbor_utils::cbor_to_data(cb_map_root)});
+            cn_cbor_free(cb_map_root);
+            break;
+        }
+    }
+
+    *pNumMsgs = written;
+    lastErrorLong = (written == *pNumMsgs) ? J2534Err::STATUS_NOERROR : J2534Err::ERR_FAILED;
+
     cbor_utils::map_put_PASSTHRU_MSG(cb_map_root, ExPipeClient::KEY_Param2, *pNumMsgs, pMsg);
     cbor_utils::map_put_int(cb_map_root, ExPipeClient::KEY_Param3, *pNumMsgs);
     cbor_utils::map_put_int(cb_map_root, ExPipeClient::KEY_Param4, Timeout);
@@ -525,10 +692,8 @@ long J2534CannelloniClient::PassThruWriteMsgs(unsigned long ChannelID, const PAS
 
     cn_cbor_free(cb_map_root);
 
-    return STATUS_NOERROR;
+    return lastErrorLong;
 }
-
-
 
 long J2534CannelloniClient::PassThruStartPeriodicMsg(unsigned long ChannelID, const PASSTHRU_MSG *pMsg, unsigned long *pMsgID, unsigned long TimeInterval)
 {
@@ -672,24 +837,36 @@ long J2534CannelloniClient::PassThruReadVersion(unsigned long DeviceID, char *pF
     return retval;
 }
 
-long J2534CannelloniClient::PassThruGetLastError(char *pErrorDescription)
+// In j2534cannelloniclient.cpp (implement/update PassThruGetLastError)
+long J2534CannelloniClient::PassThruGetLastError(char* pErrorDescription)
 {
-    long retval = STATUS_NOERROR;
+    std::lock_guard<std::mutex> lock(globalMutex);  // Thread-safe access to lastError/lastErrorLong
 
     cn_cbor_errback cn_errback = {0};
     cn_cbor* cb_map_root = cn_cbor_map_create(&cn_errback);
+    cbor_utils::map_put_int(cb_map_root, ExPipeClient::KEY_FuncName, ExPipeClient::KEY_PassThruGetLastError);
+    cbor_utils::map_put_string(cb_map_root, ExPipeClient::KEY_Param1, lastError.data());  // Log current error
 
-    cbor_utils::map_put_int(cb_map_root, ExPipeClient::KEY_FuncName /* function */, ExPipeClient::KEY_PassThruGetLastError);
-    cbor_utils::map_put_string(cb_map_root, ExPipeClient::KEY_Param1 /* param_1 */, std::string(pErrorDescription).c_str());
-    cbor_utils::map_put_int(cb_map_root, ExPipeClient::KEY_RX_TX, 0);
+    if (pErrorDescription == nullptr) {
+        lastError = "pErrorDescription is null";
+        cbor_utils::map_put_string(cb_map_root, ExPipeClient::KEY_Error, std::string("Function ").append(__FUNCTION__).append(" -> ").append(lastError).c_str());
+        this->_p_pipe->send({this->p_id, this->p_type, this->p_data_type, get_timestamp(), this->p_path, "PassThruGetLastError", cbor_utils::cbor_to_data(cb_map_root)});
+        cn_cbor_free(cb_map_root);
+        return J2534Err::ERR_NULL_PARAMETER;
+    }
+
+    // Fill buffer with lastError string (up to 80 chars, null-terminated)
+    std::strncpy(pErrorDescription, lastError.c_str(), 79);
+    pErrorDescription[79] = '\0';
+
+    // Return lastErrorLong (0 for no error, else J2534 error code)
+    long retval = (lastErrorLong == 0) ? J2534Err::STATUS_NOERROR : lastErrorLong;
 
     cbor_utils::map_put_int(cb_map_root, ExPipeClient::KEY_RETVAL_LONG, retval);
-
-    //EXDBG_LOG << "Function " << __FUNCTION__ << " not found in DLL." << EXDBG_END;
-    //cbor_utils::map_put_string(cb_map_root, ExPipeClient::KEY_Error, std::string("Function ").append(__FUNCTION__).append(" not found in DLL.").c_str());
-
+    cbor_utils::map_put_string(cb_map_root, ExPipeClient::KEY_Error, lastError.data());
     this->_p_pipe->send({this->p_id, this->p_type, this->p_data_type, get_timestamp(), this->p_path, "PassThruGetLastError", cbor_utils::cbor_to_data(cb_map_root)});
     cn_cbor_free(cb_map_root);
+
     return retval;
 }
 
@@ -1033,86 +1210,232 @@ long J2534CannelloniClient::PassThruGetPointer(long vb_pointer)
 
 long J2534CannelloniClient::PassThruGetNextCarDAQ(char **name, unsigned long *version, char **addr)
 {
-    long retval = ERR_NOT_SUPPORTED;
+    std::lock_guard<std::mutex> lock(globalMutex);
 
     cn_cbor_errback cn_errback = {0};
     cn_cbor* cb_map_root = cn_cbor_map_create(&cn_errback);
+    cbor_utils::map_put_int(cb_map_root, ExPipeClient::KEY_FuncName, ExPipeClient::KEY_PassThruGetNextCarDAQ);
 
-    cbor_utils::map_put_int(cb_map_root, ExPipeClient::KEY_FuncName /* function */, ExPipeClient::KEY_PassThruGetNextCarDAQ);
-    cbor_utils::map_put_string(cb_map_root, ExPipeClient::KEY_Param1, "");
-    cbor_utils::map_put_int(cb_map_root, ExPipeClient::KEY_Param2, *version);
-    cbor_utils::map_put_string(cb_map_root, ExPipeClient::KEY_Param3, "");
-    cbor_utils::map_put_int(cb_map_root, ExPipeClient::KEY_RX_TX, 0);
+    // Parameter logging (simplified; expand if needed)
+    cbor_utils::map_put_string(cb_map_root, ExPipeClient::KEY_Param1, "N/A");  // No direct param
+    cbor_utils::map_put_int(cb_map_root, ExPipeClient::KEY_Param2, (version ? *version : 0UL));
+    cbor_utils::map_put_string(cb_map_root, ExPipeClient::KEY_Param3, "N/A");
 
-    //EXDBG_LOG << "Function " << __FUNCTION__ << " not found in DLL." << EXDBG_END;
-    cbor_utils::map_put_string(cb_map_root, ExPipeClient::KEY_Error, std::string("Function ").append(__FUNCTION__).append(" not implemented").c_str());
+    if (name == nullptr || version == nullptr || addr == nullptr)
+    {
+        lastError = "Null parameter(s)";
+        cbor_utils::map_put_string(cb_map_root, ExPipeClient::KEY_Error, std::string("Function ").append(__FUNCTION__).append(" -> ").append(lastError).c_str());
+        this->_p_pipe->send({this->p_id, this->p_type, this->p_data_type, get_timestamp(), this->p_path, "PassThruGetNextCarDAQ", cbor_utils::cbor_to_data(cb_map_root)});
+        cn_cbor_free(cb_map_root);
+
+        return J2534Err::ERR_NULLPARAMETER;
+    }
+
+    static constexpr const char* DEFAULT_HOST = "127.0.0.1";
 
 
+    if (scanIndex >= static_cast<int>(VIRTUAL_DEVICE_COUNT))
+    {
+        cbor_utils::map_put_int(cb_map_root, ExPipeClient::KEY_RETVAL_LONG, ERR_NO_MORE_DEVICES);
+        this->_p_pipe->send({this->p_id, this->p_type, this->p_data_type, get_timestamp(), this->p_path, "PassThruGetNextCarDAQ", cbor_utils::cbor_to_data(cb_map_root)});
+        cn_cbor_free(cb_map_root);
+        return ERR_NO_MORE_DEVICES;
+    }
+
+    // Allocate strings with LocalAlloc (caller frees with LocalFree; standard for J2534 extensions)
+    // Name: Descriptive string
+    unsigned long port = getPortFromIndex(scanIndex);
+    std::array<char, 80> deviceName{0};  // Modern fixed buffer
+    std::snprintf(deviceName.data(), deviceName.size(), "Cannelloni UDP Port %lu (CAN)", port);
+
+    std::string deviceNameStr;
+    deviceNameStr.append(deviceName.data());
+
+    size_t nameLen = deviceNameStr.length() + 1;
+    *name = static_cast<char*>(LocalAlloc(LMEM_FIXED, nameLen));
+    if (*name == nullptr)
+    {
+        lastError = "LocalAlloc failed for name";
+        cbor_utils::map_put_string(cb_map_root, ExPipeClient::KEY_Error, std::string("Function ").append(__FUNCTION__).append(" -> ").append(lastError).c_str());
+        this->_p_pipe->send({this->p_id, this->p_type, this->p_data_type, get_timestamp(), this->p_path, "PassThruGetNextCarDAQ", cbor_utils::cbor_to_data(cb_map_root)});
+        cn_cbor_free(cb_map_root);
+        return J2534Err::ERR_NULLPARAMETER;
+    }
+    //std::strcpy_s(*name, nameLen, deviceName.c_str());
+    std::strncpy(*name, deviceNameStr.c_str(), nameLen - 1);
+    (*name)[nameLen - 1] = '\0';
+
+    // Version: Unsigned long, e.g., 100 for 1.00
+    *version = 100UL;  // Or tie to DLL version; could be 10404 for API 04.04
+
+    // Addr: IP address string
+    std::string deviceAddr = DEFAULT_HOST;  // Default; could scan channelMap for open host if needed
+    size_t addrLen = deviceAddr.length() + 1;
+    *addr = static_cast<char*>(LocalAlloc(LMEM_FIXED, addrLen));
+    if (*addr == nullptr)
+    {
+        LocalFree(*name);  // Cleanup on failure
+        *name = nullptr;
+        lastError = "LocalAlloc failed for addr";
+        cbor_utils::map_put_string(cb_map_root, ExPipeClient::KEY_Error, std::string("Function ").append(__FUNCTION__).append(" -> ").append(lastError).c_str());
+        this->_p_pipe->send({this->p_id, this->p_type, this->p_data_type, get_timestamp(), this->p_path, "PassThruGetNextCarDAQ", cbor_utils::cbor_to_data(cb_map_root)});
+        cn_cbor_free(cb_map_root);
+        return J2534Err::ERR_NULLPARAMETER;
+    }
+    //std::strcpy_s(*addr, addrLen, deviceAddr.c_str());
+    std::strncpy(*addr, deviceAddr.c_str(), addrLen - 1);
+    (*addr)[addrLen - 1] = '\0';
+
+    ++scanIndex;
+
+    cbor_utils::map_put_int(cb_map_root, ExPipeClient::KEY_RETVAL_LONG, J2534Err::STATUS_NOERROR);
     this->_p_pipe->send({this->p_id, this->p_type, this->p_data_type, get_timestamp(), this->p_path, "PassThruGetNextCarDAQ", cbor_utils::cbor_to_data(cb_map_root)});
     cn_cbor_free(cb_map_root);
-    return retval;
+
+    return J2534Err::STATUS_NOERROR;
 }
 
 ///v05.00
-long J2534CannelloniClient::PassThruScanForDevices(unsigned long *pDeviceCount)
+// In j2534cannelloniclient.cpp
+long J2534CannelloniClient::PassThruScanForDevices(unsigned long* pDeviceCount)
 {
-    long retval = ERR_NOT_SUPPORTED;
+    std::lock_guard<std::mutex> lock(globalMutex);
 
     cn_cbor_errback cn_errback = {0};
     cn_cbor* cb_map_root = cn_cbor_map_create(&cn_errback);
+    cbor_utils::map_put_int(cb_map_root, ExPipeClient::KEY_FuncName, ExPipeClient::KEY_PassThruScanForDevices);
+    cbor_utils::map_put_int(cb_map_root, ExPipeClient::KEY_Param1, (pDeviceCount ? *pDeviceCount : 0));
 
-    cbor_utils::map_put_int(cb_map_root, ExPipeClient::KEY_FuncName /* function */, ExPipeClient::KEY_PassThruScanForDevices);
-    cbor_utils::map_put_int(cb_map_root, ExPipeClient::KEY_Param1, *pDeviceCount);
-    cbor_utils::map_put_int(cb_map_root, ExPipeClient::KEY_RX_TX, 0);
+    if (pDeviceCount == nullptr) {
+        lastError = "pDeviceCount is null";
+        cbor_utils::map_put_string(cb_map_root, ExPipeClient::KEY_Error, std::string("Function ").append(__FUNCTION__).append(" -> ").append(lastError).c_str());
+        this->_p_pipe->send({this->p_id, this->p_type, this->p_data_type, get_timestamp(), this->p_path, "PassThruScanForDevices", cbor_utils::cbor_to_data(cb_map_root)});
+        cn_cbor_free(cb_map_root);
+        return J2534Err::ERR_NULL_PARAMETER;
+    }
 
-    //EXDBG_LOG << "Function " << __FUNCTION__ << " not found in DLL." << EXDBG_END;
-    cbor_utils::map_put_string(cb_map_root, ExPipeClient::KEY_Error, std::string("Function ").append(__FUNCTION__).append(" not implemented").c_str());
+    *pDeviceCount = VIRTUAL_DEVICE_COUNT;
+    scanIndex = 0;  // Reset enumeration
 
+    cbor_utils::map_put_int(cb_map_root, ExPipeClient::KEY_RETVAL_LONG, J2534Err::STATUS_NOERROR);
     this->_p_pipe->send({this->p_id, this->p_type, this->p_data_type, get_timestamp(), this->p_path, "PassThruScanForDevices", cbor_utils::cbor_to_data(cb_map_root)});
     cn_cbor_free(cb_map_root);
-    return retval;
+
+    return J2534Err::STATUS_NOERROR;
 }
 
-long J2534CannelloniClient::PassThruGetNextDevice(SDEVICE *psDevice)
-{
-    long retval = ERR_NOT_SUPPORTED;
+long J2534CannelloniClient::PassThruGetNextDevice(SDEVICE* psDevice) {
+    std::lock_guard<std::mutex> lock(globalMutex);
 
     cn_cbor_errback cn_errback = {0};
     cn_cbor* cb_map_root = cn_cbor_map_create(&cn_errback);
-    SDEVICE _tmp_sdev = {{0}};
-    memset(&_tmp_sdev, 0, sizeof(SDEVICE));
+    cbor_utils::map_put_int(cb_map_root, ExPipeClient::KEY_FuncName, ExPipeClient::KEY_PassThruGetNextDevice);
 
-    cbor_utils::map_put_int(cb_map_root, ExPipeClient::KEY_FuncName /* function */, ExPipeClient::KEY_PassThruGetNextDevice);
-    cbor_utils::map_put_data(cb_map_root, ExPipeClient::KEY_Param1, (const uint8_t *)&_tmp_sdev, sizeof(SDEVICE));
-    cbor_utils::map_put_int(cb_map_root, ExPipeClient::KEY_RX_TX, 0);
+    if (psDevice == nullptr) {
+        lastError = "psDevice is null";
+        cbor_utils::map_put_string(cb_map_root, ExPipeClient::KEY_Error, std::string("Function ").append(__FUNCTION__).append(" -> ").append(lastError).c_str());
+        this->_p_pipe->send({this->p_id, this->p_type, this->p_data_type, get_timestamp(), this->p_path, "PassThruGetNextDevice", cbor_utils::cbor_to_data(cb_map_root)});
+        cn_cbor_free(cb_map_root);
+        return J2534Err::ERR_NULL_PARAMETER;
+    }
 
-    //EXDBG_LOG << "Function " << __FUNCTION__ << " not found in DLL." << EXDBG_END;
-    cbor_utils::map_put_string(cb_map_root, ExPipeClient::KEY_Error, std::string("Function ").append(__FUNCTION__).append(" not implemented").c_str());
+    if (scanIndex >= static_cast<int>(VIRTUAL_DEVICE_COUNT)) {
+        cbor_utils::map_put_int(cb_map_root, ExPipeClient::KEY_RETVAL_LONG, ERR_NO_MORE_DEVICES);
+        this->_p_pipe->send({this->p_id, this->p_type, this->p_data_type, get_timestamp(), this->p_path, "PassThruGetNextDevice", cbor_utils::cbor_to_data(cb_map_root)});
+        cn_cbor_free(cb_map_root);
+        return ERR_NO_MORE_DEVICES;
+    }
 
+    // Fill SDEVICE for this virtual device
+    unsigned long port = getPortFromIndex(scanIndex);
+    bool isOpen = (channelMap.find(port) != channelMap.end());
+    std::array<char, 80> name{};  // Modern fixed buffer
+    std::snprintf(name.data(), name.size(), "Cannelloni UDP Port %lu (CAN)", port);
+    std::strncpy(psDevice->DeviceName, name.data(), sizeof(psDevice->DeviceName) - 1);
+    psDevice->DeviceName[sizeof(psDevice->DeviceName) - 1] = '\0';
+
+    psDevice->DeviceAvailable = isOpen ? 0UL : 1UL;  // 1 = free to open
+    psDevice->DeviceDLLFWStatus = 0UL;  // Compatible
+    psDevice->DeviceConnectMedia = 3UL;  // Ethernet
+    psDevice->DeviceConnectSpeed = 1000000000UL;  // 1 Gbps
+    psDevice->DeviceSignalQuality = 100UL;  // Perfect (virtual)
+    psDevice->DeviceSignalStrength = 100UL;
+
+    ++scanIndex;
+
+    cbor_utils::map_put_int(cb_map_root, ExPipeClient::KEY_RETVAL_LONG, J2534Err::STATUS_NOERROR);
     this->_p_pipe->send({this->p_id, this->p_type, this->p_data_type, get_timestamp(), this->p_path, "PassThruGetNextDevice", cbor_utils::cbor_to_data(cb_map_root)});
     cn_cbor_free(cb_map_root);
-    return retval;
+
+    return J2534Err::STATUS_NOERROR;
 }
 
-long J2534CannelloniClient::PassThruSelect(SCHANNELSET *ChannelSetPtr, unsigned long SelectType, unsigned long Timeout)
-{
-    long retval = ERR_NOT_SUPPORTED;
+long J2534CannelloniClient::PassThruSelect(SCHANNELSET* ChannelSetPtr, unsigned long SelectType, unsigned long Timeout) {
+    std::lock_guard<std::mutex> lock(globalMutex);  // Note: For polling, release/reacquire per channel if contention
 
     cn_cbor_errback cn_errback = {0};
     cn_cbor* cb_map_root = cn_cbor_map_create(&cn_errback);
-
-    cbor_utils::map_put_int(cb_map_root, ExPipeClient::KEY_FuncName /* function */, ExPipeClient::KEY_PassThruSelect);
-    cbor_utils::map_put_int(cb_map_root, ExPipeClient::KEY_Param1, 0);
+    cbor_utils::map_put_int(cb_map_root, ExPipeClient::KEY_FuncName, ExPipeClient::KEY_PassThruSelect);
+    cbor_utils::map_put_int(cb_map_root, ExPipeClient::KEY_Param1, reinterpret_cast<unsigned long>(ChannelSetPtr));
     cbor_utils::map_put_int(cb_map_root, ExPipeClient::KEY_Param2, SelectType);
     cbor_utils::map_put_int(cb_map_root, ExPipeClient::KEY_Param3, Timeout);
 
+    if (ChannelSetPtr == nullptr) {
+        lastError = "ChannelSetPtr is null";
+        cbor_utils::map_put_string(cb_map_root, ExPipeClient::KEY_Error, std::string("Function ").append(__FUNCTION__).append(" -> ").append(lastError).c_str());
+        this->_p_pipe->send({this->p_id, this->p_type, this->p_data_type, get_timestamp(), this->p_path, "PassThruSelect", cbor_utils::cbor_to_data(cb_map_root)});
+        cn_cbor_free(cb_map_root);
+        return J2534Err::ERR_NULL_PARAMETER;
+    }
 
-    //EXDBG_LOG << "Function " << __FUNCTION__ << " not found in DLL." << EXDBG_END;
-    cbor_utils::map_put_string(cb_map_root, ExPipeClient::KEY_Error, std::string("Function ").append(__FUNCTION__).append(" not implemented").c_str());
+    if (ChannelSetPtr->ChannelCount == 0 || ChannelSetPtr->ChannelList == nullptr) {
+        lastError = "Invalid ChannelSet (empty list)";
+        cbor_utils::map_put_string(cb_map_root, ExPipeClient::KEY_Error, std::string("Function ").append(__FUNCTION__).append(" -> ").append(lastError).c_str());
+        this->_p_pipe->send({this->p_id, this->p_type, this->p_data_type, get_timestamp(), this->p_path, "PassThruSelect", cbor_utils::cbor_to_data(cb_map_root)});
+        cn_cbor_free(cb_map_root);
+        return J2534Err::ERR_INVALID_CHANNEL_ID;
+    }
 
+    // Ignore SelectType or validate (e.g., if !=0 return ERR_NOT_SUPPORTED)
+    auto startTime = std::chrono::steady_clock::now();
+    unsigned long readyCount = 0;
+    bool done = false;
 
+    while (!done) {
+        readyCount = 0;
+        auto now = std::chrono::steady_clock::now();
+        auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - startTime).count();
+
+        if (elapsed >= static_cast<long long>(Timeout)) {
+            done = true;  // Timeout
+        } else {
+            // Poll each channel
+            for (unsigned long i = 0; i < ChannelSetPtr->ChannelCount; ++i) {
+                unsigned long chanId = ChannelSetPtr->ChannelList[i];
+                auto it = channelMap.find(chanId);
+                if (it != channelMap.end()) {
+                    std::lock_guard<std::mutex> chanLock(it->second.msgQueueMutex);
+                    if (!it->second.msgQueue.empty()) {
+                        ++readyCount;
+                    }
+                }
+            }
+
+            if (readyCount >= ChannelSetPtr->ChannelThreshold) {
+                done = true;  // Condition met
+            } else {
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));  // Poll interval
+            }
+        }
+    }
+
+    // Return readyCount (even on timeout, per spec)
+    long retval = (readyCount > 0) ? static_cast<long>(readyCount) : J2534Err::ERR_TIMEOUT;
+
+    cbor_utils::map_put_int(cb_map_root, ExPipeClient::KEY_RETVAL_LONG, retval);
     this->_p_pipe->send({this->p_id, this->p_type, this->p_data_type, get_timestamp(), this->p_path, "PassThruSelect", cbor_utils::cbor_to_data(cb_map_root)});
     cn_cbor_free(cb_map_root);
+
     return retval;
 }
 
@@ -1134,175 +1457,21 @@ long J2534CannelloniClient::PassThruReadDetails(unsigned long* pName)
     return retval;
 }
 
+bool J2534CannelloniClient::isValidHostString(const char* str) const
+{
+    if (!str) return false;
 
-/*
+    // Basic checks: Non-empty, null-terminated, reasonable length (e.g., IP <=15 chars)
+    size_t len = strlen(str);
+    if (len == 0 || len > 15) return false;
 
-std::unordered_map<unsigned long, ChannelContext> channels;
-std::atomic<unsigned long> nextChannelId{1};
-std::string lastError;
-
-
-
-void receiveThread(ChannelContext& ctx) {
-    char buffer[1500];
-    while (ctx.running) {
-        sockaddr_in from;
-        int fromLen = sizeof(from);
-        int len = recvfrom(ctx.socket, buffer, sizeof(buffer), 0, (sockaddr*)&from, &fromLen);
-        if (len <= 0) continue;
-
-        if ((size_t)len < sizeof(CannelloniDataPacket)) continue;
-
-        CannelloniDataPacket* pkt = (CannelloniDataPacket*)buffer;
-        CannelloniCanFrame* frames = (CannelloniCanFrame*)(buffer + sizeof(CannelloniDataPacket));
-
-        for (int i = 0; i < pkt->count && i * sizeof(CannelloniCanFrame) + sizeof(CannelloniDataPacket) <= (size_t)len; ++i) {
-            CannelloniCanFrame& f = frames[i];
-
-            PASSTHRU_MSG msg = {};
-            msg.ProtocolID = PROTOCOL_CAN;
-            msg.DataSize = f.length + 4;
-            memcpy(msg.Data, &f.can_id, 4);
-            memcpy(msg.Data + 4, f.data, f.length);
-
-            std::lock_guard<std::mutex> lock(ctx.queueMutex);
-            ctx.recvQueue.push(msg);
-        }
-    }
-}
-
-
-
-long PassThruOpen(const void* pName, unsigned long* pDeviceID) {
-    static std::atomic<unsigned long> nextDeviceId{1};
-    *pDeviceID = nextDeviceId++;
-    WSAData wsaData;
-    if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
-        lastError = "WSAStartup failed";
-        return ERR_FAILED;
-    }
-    return STATUS_NOERROR;
-}
-
-long PassThruClose(unsigned long DeviceID) {
-    for (auto& [id, ctx] : channels) {
-        if (ctx.running) {
-            ctx.running = false;
-            closesocket(ctx.socket);
-            if (ctx.recvThread.joinable()) ctx.recvThread.join();
-        }
-    }
-    channels.clear();
-    WSACleanup();
-    return STATUS_NOERROR;
-}
-
-long PassThruConnect(unsigned long DeviceID, unsigned long ProtocolID, unsigned long Flags, unsigned long Baudrate, unsigned long* pChannelID) {
-    SOCKET sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-    if (sock == INVALID_SOCKET) {
-        lastError = "Socket creation failed";
-        return ERR_FAILED;
+    // Printable ASCII (no control chars/garbage)
+    for (size_t i = 0; i < len; ++i) {
+        if (!isprint(static_cast<unsigned char>(str[i]))) return false;
     }
 
-    sockaddr_in addr = {};
-    addr.sin_family = AF_INET;
-    addr.sin_addr.s_addr = inet_addr("192.168.4.1");
-    if (Baudrate == 125000)
-        addr.sin_port = htons(CANNELLONI_PORT_125K);
-    else if (Baudrate == 500000 && Flags == 0)
-        addr.sin_port = htons(CANNELLONI_PORT_500K_6_14);
-    else
-        addr.sin_port = htons(CANNELLONI_PORT_500K_12_13);
+    // Optional: Loose IP validation (dots, digits) – skip for now, or use InetPton later
+    if (InetPtonA(AF_INET, str, nullptr) != 1) return false;  // Strict IP only
 
-    unsigned long chId = nextChannelId++;
-    ChannelContext ctx;
-    ctx.socket = sock;
-    ctx.target = addr;
-    ctx.running = true;
-    ctx.recvThread = std::thread(receiveThread, std::ref(ctx));
-
-    channels[chId] = std::move(ctx);
-    *pChannelID = chId;
-    return STATUS_NOERROR;
+    return true;
 }
-
-long PassThruDisconnect(unsigned long ChannelID) {
-    auto it = channels.find(ChannelID);
-    if (it == channels.end()) return ERR_INVALID_CHANNEL_ID;
-    it->second.running = false;
-    closesocket(it->second.socket);
-    if (it->second.recvThread.joinable()) it->second.recvThread.join();
-    channels.erase(it);
-    return STATUS_NOERROR;
-}
-
-long PassThruWriteMsgs(unsigned long ChannelID, const PASSTHRU_MSG* pMsg, unsigned long* pNumMsgs, unsigned long Timeout) {
-    auto it = channels.find(ChannelID);
-    if (it == channels.end()) return ERR_INVALID_CHANNEL_ID;
-    const ChannelContext& ctx = it->second;
-
-    for (unsigned i = 0; i < *pNumMsgs; ++i) {
-        CannelloniDataPacket pkt = {0x01, 0x01, 0x00, 1};
-        CannelloniCanFrame frame = {};
-        memcpy(&frame.can_id, pMsg[i].Data, 4);
-        frame.length = (uint8_t)(pMsg[i].DataSize - 4);
-        memcpy(frame.data, pMsg[i].Data + 4, frame.length);
-
-        char buffer[32] = {};
-        memcpy(buffer, &pkt, sizeof(pkt));
-        memcpy(buffer + sizeof(pkt), &frame, sizeof(frame));
-
-        sendto(ctx.socket, buffer, sizeof(pkt) + sizeof(frame), 0, (sockaddr*)&ctx.target, sizeof(ctx.target));
-    }
-
-    return STATUS_NOERROR;
-}
-
-long PassThruReadMsgs(unsigned long ChannelID, PASSTHRU_MSG* pMsg, unsigned long* pNumMsgs, unsigned long Timeout) {
-    auto it = channels.find(ChannelID);
-    if (it == channels.end()) return ERR_INVALID_CHANNEL_ID;
-
-    unsigned count = 0;
-    auto& q = it->second.recvQueue;
-    auto& mtx = it->second.queueMutex;
-
-    auto start = std::chrono::steady_clock::now();
-    while (count < *pNumMsgs) {
-        {
-            std::lock_guard<std::mutex> lock(mtx);
-            if (!q.empty()) {
-                pMsg[count++] = q.front();
-                q.pop();
-                continue;
-            }
-        }
-        if (Timeout == 0) break;
-        if (std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count() > Timeout) break;
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
-    }
-    *pNumMsgs = count;
-    return STATUS_NOERROR;
-}
-
-long PassThruReadVersion(unsigned long DeviceID, char* pApiVersion, char* pDllVersion, char* pFirmwareVersion) {
-    strcpy_s(pApiVersion, 32, "04.04");
-    strcpy_s(pDllVersion, 32, "CANelloniWrapper 1.0");
-    strcpy_s(pFirmwareVersion, 32, "ESP32 CANelloni");
-    return STATUS_NOERROR;
-}
-
-long PassThruGetLastError(char* pErrorDescription) {
-    strncpy_s(pErrorDescription, 80, lastError.c_str(), _TRUNCATE);
-    return STATUS_NOERROR;
-}
-
-// Not implemented
-long PassThruStartPeriodicMsg(...) { return ERR_FAILED; }
-long PassThruStopPeriodicMsg(...) { return ERR_FAILED; }
-long PassThruStartMsgFilter(...) { return ERR_FAILED; }
-long PassThruStopMsgFilter(...) { return ERR_FAILED; }
-long PassThruSetProgrammingVoltage(...) { return ERR_FAILED; }
-long PassThruIoctl(...) { return ERR_FAILED; }
-
-
-*/

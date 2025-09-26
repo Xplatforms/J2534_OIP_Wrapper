@@ -626,6 +626,8 @@ enum J2534Err
 
     ERR_NULLPARAMETER       /*v2*/      = ERR_NULL_PARAMETER
 };
+
+#define ERR_NO_MORE_DEVICES     0x15
 /*
 // Function call successful
 #define STATUS_NOERROR        0x00

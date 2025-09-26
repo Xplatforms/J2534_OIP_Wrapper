@@ -16,10 +16,10 @@
 #include "expipeclient.h"
 
 //#define STATUS_NOERROR 0
-#define ERR_FAILED 1
 
 #define PROTOCOL_CAN 1
 #define MAX_CAN_FRAME_DATA_LEN 8
+
 #define CANNELLONI_PORT_125K 20000
 #define CANNELLONI_PORT_500K_12_13 20002
 #define CANNELLONI_PORT_500K_6_14 20001
@@ -27,14 +27,16 @@
 
 struct ChannelContext
 {
-    int sockfd = -1;
+    SOCKET sockfd = INVALID_SOCKET;  // Use SOCKET typedef from <winsock2.h>
     sockaddr_in targetAddr{};
+    sockaddr_in localAddr{};  // For bind()
     std::thread recvThread;
     std::atomic<bool> stopRequested{false};
+    std::atomic<uint8_t> seqNo{0};  // For TX seq_no
 
-    std::mutex msgQueueMutex;
+    mutable std::mutex msgQueueMutex;
     std::condition_variable msgQueueCv;
-    std::queue<std::vector<uint8_t>> msgQueue;
+    std::queue<PASSTHRU_MSG> msgQueue;  // Parsed J2534 msgs
 
     ChannelContext() = default;
 
@@ -116,8 +118,22 @@ public:
 
 private:
     void startReceiveThread(ChannelContext& ctx);
-    bool popMessage(ChannelContext& ctx, std::vector<uint8_t>& outMsg, int timeoutMs);
-    void pushMessage(ChannelContext& ctx, const std::vector<uint8_t>& msg);
+    bool popParsedMsg(ChannelContext& ctx, PASSTHRU_MSG& outMsg);
+
+    long getDefaultHostAndPort();
+    bool isValidHostString(const char* str) const;
+
+    static int scanIndex;  // Current device index for GetNext (thread-safe via globalMutex)
+    static constexpr unsigned long VIRTUAL_DEVICE_COUNT = 3;
+    static constexpr unsigned long BASE_PORT = 20000;
+
+    std::string         defaultHost;
+    unsigned long       defaultPort;
+
+    // Helper to get virtual device port from index
+    static unsigned long getPortFromIndex(int index) {
+        return J2534CannelloniClient::BASE_PORT + index;
+    }
 
 private:
     std::mutex globalMutex;
