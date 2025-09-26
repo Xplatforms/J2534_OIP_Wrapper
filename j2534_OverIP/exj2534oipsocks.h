@@ -8,7 +8,6 @@
 #include "exj2534device.h"
 
 
-
 class ExJ2534OIPSocks
 {
 

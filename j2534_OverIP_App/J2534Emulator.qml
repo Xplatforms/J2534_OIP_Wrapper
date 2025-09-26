@@ -35,7 +35,7 @@ Pane
                 property bool _loaded: false
                 Layout.fillHeight: true
                 Layout.fillWidth: true
-                spacing: 2
+                spacing: 0
 
                 highlight: Rectangle
                 {
@@ -45,7 +45,7 @@ Pane
 
                 flickableDirection: Flickable.AutoFlickDirection
 
-                highlightFollowsCurrentItem: true
+                //highlightFollowsCurrentItem: true
                 highlightMoveDuration: 100
                 clip: true
 
@@ -75,21 +75,38 @@ Pane
 
                 delegate: Rectangle
                 {
-                    height: 64
+                    height: 24
                     width: listView.width
+                    border.color: "lightGray"
+                    border.width: 1
+                    //radius: 2
 
                     RowLayout
                     {
                         anchors.fill: parent
+
                         Label
                         {
+                            padding: 4
                             Layout.fillHeight: true
                             Layout.fillWidth: true
+                            Layout.alignment: Qt.AlignVCenter
                             text: model.Message
+                            font.family: "Candara"
+                            font.pointSize: 11
+
                         }
+
+                        Rectangle
+                        {
+                            Layout.fillHeight: true
+                            width: 100
+                            color: "blue"
+                        }
+
                     }
 
-                    color: "red"
+                    //color: "red"
 
                 }
 

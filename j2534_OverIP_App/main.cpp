@@ -5,7 +5,8 @@
 
 #include "expipeserver.h"
 #include "exj2534emulator.h"
-
+#include "exj2534wrapper.h"
+#include "exj2534cannelloni.h"
 
 int main(int argc, char *argv[])
 {
@@ -19,9 +20,8 @@ int main(int argc, char *argv[])
 
 
     qmlRegisterSingletonInstance("ExJ2534Emulator", 1, 0, "ExJ2534Emulator", ExJ2534Emulator::getInstance());
-
-
-
+    qmlRegisterSingletonInstance("ExJ2534Wrapper", 1, 0, "ExJ2534Wrapper", ExJ2534Wrapper::getInstance());
+    qmlRegisterSingletonInstance("ExJ2534Cannelloni", 1, 0, "ExJ2534Cannelloni", ExJ2534Cannelloni::getInstance());
 
 
     QQmlApplicationEngine engine;

@@ -71,8 +71,8 @@ void ExJ2534Emulator::processPipeMessage(PipeMessage msg)
 
 void ExJ2534Emulator::addElement(TimestampedObject * obj)
 {
-    this->beginInsertRows(QModelIndex(), this->rowCount(), this->rowCount());
-    this->p_objs.append(obj);
+    this->beginInsertRows(QModelIndex(), 0, 0);
+    this->p_objs.insert(0, obj);
     this->endInsertRows();
 }
 

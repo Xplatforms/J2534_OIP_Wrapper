@@ -6,6 +6,7 @@
 #include <QQmlEngine>
 
 #include "types.h"
+#include "PassThruStruct.h"
 
 class ExJ2534ReadMsgsList : public QAbstractListModel
 {
@@ -17,7 +18,17 @@ public:
     enum ElemRoles
     {
         ID = Qt::UserRole + 1,
+        HasError,
+        ProtocolID,
+        RxStatus,
+        TxFlags,
+        Timestamp,
+        DataSize,
+        ExtraDataIndex,
+        Data
     };
+
+
 
     explicit ExJ2534ReadMsgsList(QObject *parent = nullptr);
 
@@ -27,13 +38,13 @@ public:
 
 public slots:
     void processPipeMessage(PipeMessage msg);
-    void addElement(TimestampedObject * obj);
-    void removeElement(TimestampedObject * obj);
+    void addElement(PASSTHRU_MSG * obj);
+    void removeElement(PASSTHRU_MSG * obj);
     void removeElementByIndex(qint32 idx);
 
 private:
     QHash<int, QByteArray>          m_roles;
-    QList<TimestampedObject *>      p_objs;
+    QList<PASSTHRU_MSG *>           p_objs;
 };
 
 #endif // EXJ2534READMSGSLIST_H
