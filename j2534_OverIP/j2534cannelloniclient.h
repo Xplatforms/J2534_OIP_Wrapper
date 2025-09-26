@@ -23,13 +23,12 @@
 #define CANNELLONI_PORT_125K 20000
 #define CANNELLONI_PORT_500K_12_13 20002
 #define CANNELLONI_PORT_500K_6_14 20001
-
+#define CAN_EFF_FLAG 0x80000000U
 
 struct ChannelContext
 {
     SOCKET sockfd = INVALID_SOCKET;  // Use SOCKET typedef from <winsock2.h>
     sockaddr_in targetAddr{};
-    sockaddr_in localAddr{};  // For bind()
     std::thread recvThread;
     std::atomic<bool> stopRequested{false};
     std::atomic<uint8_t> seqNo{0};  // For TX seq_no
@@ -120,7 +119,7 @@ private:
     void startReceiveThread(ChannelContext& ctx);
     bool popParsedMsg(ChannelContext& ctx, PASSTHRU_MSG& outMsg);
 
-    long getDefaultHostAndPort();
+    long getDefaults();
     bool isValidHostString(const char* str) const;
 
     static int scanIndex;  // Current device index for GetNext (thread-safe via globalMutex)
@@ -129,6 +128,7 @@ private:
 
     std::string         defaultHost;
     unsigned long       defaultPort;
+    uint8_t             cannelloniVersion;
 
     // Helper to get virtual device port from index
     static unsigned long getPortFromIndex(int index) {

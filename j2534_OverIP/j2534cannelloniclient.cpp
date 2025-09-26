@@ -20,6 +20,7 @@
 //20000 125кбит  3/11 пин
 //20001 500кбит  6/14 пин - Standart CAN Pins on OBD-II
 //20002 500кбит 12/13 пин
+enum op_codes {DATA, ACK, NACK};
 
 #pragma pack(push, 1)
 struct CannelloniDataPacket {
@@ -28,7 +29,9 @@ struct CannelloniDataPacket {
     uint8_t seq_no;
     uint16_t count;
 };
+#pragma pack(pop)
 
+#pragma pack(push, 1)
 struct CannelloniCanFrame {
     uint32_t can_id;
     uint8_t length;
@@ -47,12 +50,9 @@ J2534CannelloniClient::J2534CannelloniClient()
     this->p_id = ExDbg::crc32(ExDbg::getProcessPath());
     this->p_type = 4; // 4 = J2534CannelloniClient
     this->p_data_type = 2; // 2 = cbor
+    this->cannelloniVersion = 1;
 
-    if(this->getDefaultHostAndPort() != ERROR_SUCCESS)
-    {
-        this->defaultHost.append("127.0.0.1");
-        this->defaultPort = 20000;
-    }
+    this->getDefaults();
 
     cn_cbor_errback cn_errback = {0};
     cn_cbor* cb_map_root = cn_cbor_map_create(&cn_errback);
@@ -90,7 +90,7 @@ std::string J2534CannelloniClient::getIName()
     return std::string(pname);
 }
 
-long J2534CannelloniClient::getDefaultHostAndPort()
+long J2534CannelloniClient::getDefaults()
 {
     int retc = 0;
     HKEY hKey;
@@ -98,6 +98,7 @@ long J2534CannelloniClient::getDefaultHostAndPort()
     {
         char host[MAX_PATH] = {0};
         DWORD port = 0;
+        DWORD version = 0;
         DWORD portSize = sizeof(port);
         DWORD type = 0;
 
@@ -107,16 +108,36 @@ long J2534CannelloniClient::getDefaultHostAndPort()
             this->defaultHost.append(host);
             retc++;
         }
+        else
+        {
+            this->defaultHost.append("127.0.0.1");
+        }
         if(RegQueryValueExA(hKey,"DefaultPort", NULL, &type, (LPBYTE)&port, &portSize) == ERROR_SUCCESS)
         {
             this->defaultPort = port;
             retc++;
         }
+        else
+        {
+            this->defaultPort = 20000;
+        }
+
+        if(RegQueryValueExA(hKey,"CannelloniDataVersion", NULL, &type, (LPBYTE)&version, &portSize) == ERROR_SUCCESS)
+        {
+            this->cannelloniVersion = version;
+            retc++;
+        }
+        else
+        {
+            this->cannelloniVersion = 1;
+        }
+
         RegCloseKey(hKey);
     }
-    return retc==2?ERROR_SUCCESS:ERROR_ASSERTION_FAILURE;
+    return retc==3?ERROR_SUCCESS:ERROR_ASSERTION_FAILURE;
 }
 
+//nc -u -w 1 172.16.90.1 20000 < <(printf '\x02\x00\x00\x00\x01\x80\x07\xE0\x00\x08\x01\x02\x03\x04\x05\x06\x07\x08')
 void J2534CannelloniClient::startReceiveThread(ChannelContext& ctx)
 {
     ctx.recvThread = std::thread([this, &ctx](){
@@ -133,24 +154,34 @@ void J2534CannelloniClient::startReceiveThread(ChannelContext& ctx)
             int ret = select(static_cast<int>(ctx.sockfd + 1), &readfds, nullptr, nullptr, &timeout);
             if (ret > 0 && FD_ISSET(ctx.sockfd, &readfds))
             {
-                sockaddr_in fromAddr;
-                int fromLen = sizeof(fromAddr);
-                int bytesReceived = recvfrom(ctx.sockfd, reinterpret_cast<char*>(buffer), maxPacketSize, 0,
-                                             reinterpret_cast<sockaddr*>(&fromAddr), &fromLen);
+                //sockaddr_in fromAddr;
+                int bytesReceived = recv(ctx.sockfd, reinterpret_cast<char*>(buffer), maxPacketSize, 0);
                 if (bytesReceived > 0)
                 {
                     printf("GOT UDP MSG. LEN %d\n", bytesReceived);
                     if (bytesReceived < static_cast<int>(sizeof(CannelloniDataPacket)))
                     {
                         printf("PACKET to Small \n");
-                        continue;  // Assume v1
+                        break;
                     }
 
-                    const CannelloniDataPacket* pkt = reinterpret_cast<const CannelloniDataPacket*>(buffer);
-                    if (pkt->version != 1)
+                    printf("sizeof(CannelloniDataPacket) %d\n", sizeof(CannelloniDataPacket));
+                    printf("sizeof(CannelloniCanFrame) %d\n", sizeof(CannelloniCanFrame));
+
+                    for(int x = 0; x < bytesReceived; x++ )
+                    {
+                        printf("%02x ", buffer[x]);
+                    }
+                    printf("\n");
+
+                    CannelloniDataPacket tmp{};
+                    memcpy(&tmp, buffer, sizeof(CannelloniDataPacket));
+                    //tmp.count = ntohs(tmp.count);
+                    const CannelloniDataPacket* pkt = &tmp;//reinterpret_cast<const CannelloniDataPacket*>(buffer);
+                    if (pkt->version != this->cannelloniVersion)
                     {
                         printf("NOT CANNELLONI PACKET \n");
-                        continue;  // Assume v1
+                        break;
                     }
                     else
                     {
@@ -162,7 +193,7 @@ void J2534CannelloniClient::startReceiveThread(ChannelContext& ctx)
                     if (framesSize < static_cast<size_t>(pkt->count) * sizeof(CannelloniCanFrame))
                     {
                         printf("Packet size too small for CannelloniCanFrame. Continue. ");
-                        continue;
+                        break;
                     }
 
                     const CannelloniCanFrame* frames = reinterpret_cast<const CannelloniCanFrame*>(buffer + frameOffset);
@@ -316,29 +347,11 @@ long J2534CannelloniClient::PassThruOpen(const void* pName, unsigned long* pDevi
         return lastErrorLong;
     }
 
-    // Bind to local 0.0.0.0:port (wildcard)
     ChannelContext ctx;
     ctx.sockfd = sockfd;
-    ctx.localAddr.sin_family = AF_INET;
-    ctx.localAddr.sin_addr.s_addr = INADDR_ANY;
-    ctx.localAddr.sin_port = htons(static_cast<uint16_t>(port));
-    if (bind(sockfd, reinterpret_cast<sockaddr*>(&ctx.localAddr), sizeof(ctx.localAddr)) == SOCKET_ERROR)
-    {
-        closesocket(sockfd);
-        lastError = "Bind failed: " + std::to_string(WSAGetLastError());
-        lastErrorLong = J2534Err::ERR_DEVICE_NOT_CONNECTED;
 
-        cbor_utils::map_put_string(cb_map_root, ExPipeClient::KEY_Param1, host);
-        cbor_utils::map_put_int(cb_map_root, ExPipeClient::KEY_Param2, port);
-        cbor_utils::map_put_string(cb_map_root, ExPipeClient::KEY_Error, std::string("Function ").append(__FUNCTION__).append(" -> ").append(lastError).c_str());
-        this->_p_pipe->send({this->p_id, this->p_type, this->p_data_type, get_timestamp(), this->p_path, "PassThruOpen", cbor_utils::cbor_to_data(cb_map_root)});
-        cn_cbor_free(cb_map_root);
-
-        return lastErrorLong;
-    }
-
-    // Set target remote host:port
-    ctx.targetAddr = ctx.localAddr;  // Copy family/port
+    ctx.targetAddr.sin_family = AF_INET;
+    ctx.targetAddr.sin_port = htons(static_cast<uint16_t>(port));
 
     if (InetPtonA(AF_INET, host, &ctx.targetAddr.sin_addr) != 1)
     {
@@ -353,6 +366,31 @@ long J2534CannelloniClient::PassThruOpen(const void* pName, unsigned long* pDevi
         cn_cbor_free(cb_map_root);
 
         return lastErrorLong;
+    }
+
+    // Connect the socket to remote for default peer
+    if (connect(sockfd, reinterpret_cast<sockaddr*>(&ctx.targetAddr), sizeof(ctx.targetAddr)) == SOCKET_ERROR)
+    {
+        lastError = "Connect failed: " + std::to_string(WSAGetLastError());
+        lastErrorLong = J2534Err::ERR_DEVICE_NOT_CONNECTED;
+
+        cbor_utils::map_put_string(cb_map_root, ExPipeClient::KEY_Error, std::string("Function ").append(__FUNCTION__).append(" -> ").append(lastError).c_str());
+        this->_p_pipe->send({this->p_id, this->p_type, this->p_data_type, get_timestamp(), this->p_path, "PassThruOpen", cbor_utils::cbor_to_data(cb_map_root)});
+        cn_cbor_free(cb_map_root);
+        closesocket(sockfd);
+        return lastErrorLong;
+    }
+
+    // Send initial init packet (empty Cannelloni DATA packet) so ESP32 can capture client address
+    CannelloniDataPacket initPkt;
+    initPkt.version = this->cannelloniVersion;
+    initPkt.op_code = 0;  // DATA = 0
+    initPkt.seq_no = 0;
+    initPkt.count = 0;
+    int sent = send(sockfd, reinterpret_cast<const char*>(&initPkt), sizeof(initPkt), 0);
+    if (sent != sizeof(initPkt))
+    {
+        printf("Warning: Failed to send init packet: %d\n", WSAGetLastError());
     }
 
     channelMap[port] = std::move(ctx);
@@ -623,12 +661,12 @@ long J2534CannelloniClient::PassThruWriteMsgs(unsigned long ChannelID, const PAS
         return lastErrorLong;
     }
 
-    ChannelContext& ctx = it->second;
-    unsigned long written = 0;
+    auto& ctx = it->second;
+    unsigned long sentMsgs = 0;
 
-    for (; written < *pNumMsgs; ++written)
+    for (unsigned long i = 0; i < *pNumMsgs; ++i)
     {
-        const auto& srcMsg = pMsg[written];
+        const auto& srcMsg = pMsg[i];
 
         printf("[WRITEMSG] protid %08x rxstatus %08x txflags %08x tstamp %d e_index %08x datasize %d \n [MSG]: ",
                srcMsg.ProtocolID,srcMsg.RxStatus, srcMsg.TxFlags,
@@ -639,50 +677,68 @@ long J2534CannelloniClient::PassThruWriteMsgs(unsigned long ChannelID, const PAS
         }
         printf("\n");
 
-
         if ((srcMsg.ProtocolID != CAN && srcMsg.ProtocolID != CAN_PS) || srcMsg.DataSize < 4 || srcMsg.DataSize > 4 + MAX_CAN_FRAME_DATA_LEN)
         {
             lastError = "Invalid CAN msg format";
+            printf("[PassThruWriteMsgs] %s\n", lastError.data());
             lastErrorLong = J2534Err::ERR_BUFFER_OVERFLOW;
             cbor_utils::map_put_int(cb_map_root, ExPipeClient::KEY_Param2, 0);
             cbor_utils::map_put_string(cb_map_root, ExPipeClient::KEY_Error, std::string("Function ").append(__FUNCTION__).append(" -> ").append(lastError).c_str());
             this->_p_pipe->send({this->p_id, this->p_type, this->p_data_type, get_timestamp(), this->p_path, "PassThruWriteMsgs", cbor_utils::cbor_to_data(cb_map_root)});
             cn_cbor_free(cb_map_root);
-            break;
+            break; // Skip invalid messages
         }
 
         // Build frame
         CannelloniCanFrame frame{};
         uint32_t canId;
-        std::copy_n(srcMsg.Data, 4, reinterpret_cast<uint8_t*>(&canId));  // Extract ID (ignore flags for now)
-        frame.can_id = canId;
+        std::copy_n(srcMsg.Data, 4, reinterpret_cast<uint8_t*>(&canId));  // Extract ID
+        // Check for extended frame flag
+        if (srcMsg.TxFlags & CAN_29BIT_ID)
+        {
+            canId |= CAN_EFF_FLAG;  // Set extended frame flag
+        }
+        frame.can_id = canId;  // Convert to network byte order
         frame.length = static_cast<uint8_t>(srcMsg.DataSize - 4);
         std::copy_n(srcMsg.Data + 4, frame.length, frame.data);
 
         // Build packet (single frame)
-        CannelloniDataPacket pkt{1, 1, ctx.seqNo.fetch_add(1), 1};  // version=1, op=1 (TX), seq, count=1
-        std::array<uint8_t, sizeof(pkt) + sizeof(frame)> buffer{};
-        std::copy_n(reinterpret_cast<uint8_t*>(&pkt), sizeof(pkt), buffer.begin());
-        std::copy_n(reinterpret_cast<uint8_t*>(&frame), sizeof(frame), buffer.begin() + sizeof(pkt));
+        CannelloniDataPacket pkt{this->cannelloniVersion, op_codes::DATA, ctx.seqNo.fetch_add(1), 1};  // version=1, op=DATA, seq, count=1 (network order)
 
-        // Send
+        // Calculate exact buffer size
+        size_t packetSize = sizeof(CannelloniDataPacket) + sizeof(frame.can_id) + sizeof(frame.length) + frame.length;
+        std::vector<uint8_t> buffer(packetSize);
+
+        // Copy packet header
+        std::copy_n(reinterpret_cast<uint8_t*>(&pkt), sizeof(CannelloniDataPacket), buffer.begin());
+        // Copy frame header and data
+        size_t offset = sizeof(pkt);
+        std::copy_n(reinterpret_cast<uint8_t*>(&frame.can_id), sizeof(frame.can_id), buffer.begin() + offset);
+        offset += sizeof(frame.can_id);
+        buffer[offset] = frame.length;
+        offset += sizeof(frame.length);
+        std::copy_n(frame.data, frame.length, buffer.begin() + offset);
+
+        // Send packet
         int sent = sendto(ctx.sockfd, reinterpret_cast<const char*>(buffer.data()), buffer.size(), 0,
                           reinterpret_cast<sockaddr*>(&ctx.targetAddr), sizeof(ctx.targetAddr));
-
-        if (sent != static_cast<int>(buffer.size()))
+        if (sent == static_cast<int>(buffer.size()))
+        {
+            ++sentMsgs;
+        }
+        else
         {
             lastError = "Send failed: " + std::to_string(WSAGetLastError());
             lastErrorLong = J2534Err::ERR_FAILED;
-            cbor_utils::map_put_int(cb_map_root, ExPipeClient::KEY_Param2, 0);
             cbor_utils::map_put_string(cb_map_root, ExPipeClient::KEY_Error, std::string("Function ").append(__FUNCTION__).append(" -> ").append(lastError).c_str());
             this->_p_pipe->send({this->p_id, this->p_type, this->p_data_type, get_timestamp(), this->p_path, "PassThruWriteMsgs", cbor_utils::cbor_to_data(cb_map_root)});
             cn_cbor_free(cb_map_root);
-            break;
+            return lastErrorLong;
         }
     }
 
-    *pNumMsgs = written;
-    lastErrorLong = (written == *pNumMsgs) ? J2534Err::STATUS_NOERROR : J2534Err::ERR_FAILED;
+    *pNumMsgs = sentMsgs;
+    lastErrorLong = (sentMsgs == *pNumMsgs) ? J2534Err::STATUS_NOERROR : J2534Err::ERR_FAILED;
 
     cbor_utils::map_put_PASSTHRU_MSG(cb_map_root, ExPipeClient::KEY_Param2, *pNumMsgs, pMsg);
     cbor_utils::map_put_int(cb_map_root, ExPipeClient::KEY_Param3, *pNumMsgs);
