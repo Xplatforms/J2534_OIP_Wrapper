@@ -479,7 +479,7 @@ long J2534CannelloniClient::PassThruConnect(unsigned long DeviceID, unsigned lon
     }
 
     // Only CAN and CAN_PS supported
-    if (ProtocolID != CAN && ProtocolID != CAN_PS)
+    /*if (ProtocolID != CAN && ProtocolID != CAN_PS)
     {
         lastError = "Unsupported protocol";
         lastErrorLong = J2534Err::ERR_INVALID_PROTOCOL_ID;
@@ -488,7 +488,7 @@ long J2534CannelloniClient::PassThruConnect(unsigned long DeviceID, unsigned lon
         this->_p_pipe->send({this->p_id, this->p_type, this->p_data_type, get_timestamp(), this->p_path, "PassThruConnect", cbor_utils::cbor_to_data(cb_map_root)});
         cn_cbor_free(cb_map_root);
         return lastErrorLong;
-    }
+    }*/
 
     *pChannelID = DeviceID;  // Single channel == device
     lastErrorLong = J2534Err::STATUS_NOERROR;
@@ -869,7 +869,6 @@ long J2534CannelloniClient::PassThruReadVersion(unsigned long DeviceID, char *pF
 
     cbor_utils::map_put_int(cb_map_root, ExPipeClient::KEY_RETVAL_LONG, retval);
 
-
     char FirmwareVersion[80] = {0};
     char DllVersion[80] = {0};
     char ApiVersion[80] = {0};
@@ -881,12 +880,13 @@ long J2534CannelloniClient::PassThruReadVersion(unsigned long DeviceID, char *pF
 
     memcpy(ApiVersion, "04.04", 5);
     memcpy(DllVersion, "1.0.001 Feb 28 2023 12:46:00", 28);
-    memcpy(FirmwareVersion, "9", 1);
+    memcpy(FirmwareVersion, "04.04", 5);
 
     memcpy(pApiVersion, ApiVersion, 80);
     memcpy(pDllVersion, DllVersion, 80);
     memcpy(pFirmwareVersion, FirmwareVersion, 80);
 
+    printf("[PassThruReadVersion] DeviceID %d firmw %s dllver %s api %s\n", pFirmwareVersion, pDllVersion, pApiVersion );
 
     this->_p_pipe->send({this->p_id, this->p_type, this->p_data_type, get_timestamp(), this->p_path, "PassThruReadVersion", cbor_utils::cbor_to_data(cb_map_root)});
     cn_cbor_free(cb_map_root);
@@ -941,20 +941,48 @@ long J2534CannelloniClient::PassThruIoctl(unsigned long ChannelID, unsigned long
 
     cbor_utils::map_put_int(cb_map_root, ExPipeClient::KEY_RETVAL_LONG, retval);
 
+    unsigned long data_rate = 500000;
+    if(ChannelID == 20000)data_rate = 125000;
+
     // TODO: check IoctlID?
     // 3 READ_VBATT?
     // 2 CONFIG_SET?
     printf("PassThruIoctl Channel or Device %d IoctlID = %08x\n", ChannelID, IoctlID);
+
     if (IoctlID == READ_VBATT)
     {
         //unsigned int voltageLevel = 14400;
         //memcpy(pOutput, &voltageLevel, sizeof(unsigned int));
 
         unsigned int *voltageLevel = (unsigned int*)pOutput;
-        *voltageLevel = 14400; // The units will be in milli-volts and will be rounded to the nearest tenth of a volt.
+        *voltageLevel = 12800; // The units will be in milli-volts and will be rounded to the nearest tenth of a volt.
+    }
+    else if(IoctlID == READ_PROG_VOLTAGE)
+    {
+        printf("[READ_PROG_VOLTAGE] \n");
+        unsigned int *voltageLevel = (unsigned int*)pOutput;
+        *voltageLevel = 5200; // The units will be in milli-volts and will be rounded to the nearest tenth of a volt.
+    }
+    else if(IoctlID == READ_PIN_VOLTAGE)
+    {
+        printf("[READ_PIN_VOLTAGE] \n");
+        unsigned int *voltageLevel = (unsigned int*)pOutput;
+
+        if(pInput == NULL)
+        {
+            printf("READ_PIN_VOLTAGE with no Input? \n");
+            *voltageLevel = 0;
+        }
+        else
+        {
+            unsigned int *pin = (unsigned int*)pInput;
+            printf("[READ_PIN_VOLTAGE] PIN Number: %d \n", *pin);
+            *voltageLevel = 5000;
+        }
     }
     else if(IoctlID == SET_CONFIG)
     {
+        printf("[SET_CONFIG] \n");
         if(pInput == NULL)
         {
             printf("SET_CONFIG with no Input? \n");
@@ -972,14 +1000,71 @@ long J2534CannelloniClient::PassThruIoctl(unsigned long ChannelID, unsigned long
     else if(IoctlID == GET_DEVICE_INFO)
     {
         auto param_list = (SPARAM_LIST*)pOutput;
-        switch(param_list->SParamPtr[0].Parameter)
+
+        printf("[GET_DEVICE_INFO] SPARAM_LIST NumOfParameters %d\n", param_list->NumOfParameters);
+        for(int i = 0; i < param_list->NumOfParameters; i++)
         {
-        case SERIAL_NUMBER:
-            param_list->SParamPtr[0].Supported = 1;
-            param_list->SParamPtr[0].Value = 987654321;
-            break;
+            printf("SParamPtr %d paramter %08x value %08x supported %08x \n", i, param_list->SParamPtr[i].Parameter, param_list->SParamPtr[i].Value, param_list->SParamPtr[i].Supported);
+            switch(param_list->SParamPtr[i].Parameter)
+            {
+            case SERIAL_NUMBER:
+                printf("[GET_DEVICE_INFO][SERIAL_NUMBER] \n");
+                param_list->SParamPtr[i].Supported = 1;
+                param_list->SParamPtr[i].Value = 987654321;
+                break;
+            case CAN_SUPPORTED:
+                printf("[GET_DEVICE_INFO][CAN_SUPPORTED] \n");
+                param_list->SParamPtr[i].Supported = 1;
+                break;
+            case SHORT_TO_GND_J1962:
+                printf("[GET_DEVICE_INFO][SHORT_TO_GND_J1962] %08x\n", param_list->SParamPtr[i].Value);
+                if(param_list->SParamPtr[i].Value == 0)param_list->SParamPtr[i].Supported = 1;
+                break;
+            case PGM_VOLTAGE_J1962:
+                printf("[GET_DEVICE_INFO][PGM_VOLTAGE_J1962] %08x\n", param_list->SParamPtr[i].Value);
+                param_list->SParamPtr[i].Supported = 1;
+                break;
+            }
         }
     }
+    else if(IoctlID == GET_CONFIG)
+    {
+        printf("[GET_CONFIG] \n");
+        if(pInput == NULL)
+        {
+            printf("GET_CONFIG with no Input? \n");
+        }
+        else
+        {
+            const SCONFIG_LIST * input = reinterpret_cast<const SCONFIG_LIST *>(pInput);
+            printf("GET_CONFIG NumOfParams %d\n", input->NumOfParams);
+            for(int i = 0; i < input->NumOfParams; i++)
+            {
+                printf("ConfigPtr %d paramter %08x value %08x \n", i, input->ConfigPtr[i].Parameter, input->ConfigPtr[i].Value);
+                switch(input->ConfigPtr[i].Parameter)
+                {
+                case ConfigParamId::DATA_RATE:
+                    printf("[GET_CONFIG][DATA_RATE] \n");
+
+                    input->ConfigPtr[i].Value = data_rate;
+                    break;
+                case ConfigParamId::DATA_BITS:
+                    printf("[GET_CONFIG][DATA_BITS] \n");
+                    break;
+                case ConfigParamId::LOOPBACK:
+                    printf("[GET_CONFIG][LOOPBACK] \n");
+                    break;
+                case ConfigParamId::BIT_SAMPLE_POINT:
+                    printf("[GET_CONFIG][BIT_SAMPLE_POINT] \n");
+                    break;
+                case ConfigParamId::SYNC_JUMP_WIDTH:
+                    printf("[GET_CONFIG][SYNC_JUMP_WIDTH] \n");
+                    break;
+                }
+            }
+        }
+    }
+
 
     this->_p_pipe->send({this->p_id, this->p_type, this->p_data_type, get_timestamp(), this->p_path, "PassThruIoctl", cbor_utils::cbor_to_data(cb_map_root)});
     cn_cbor_free(cb_map_root);
