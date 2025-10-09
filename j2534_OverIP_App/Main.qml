@@ -36,6 +36,29 @@ ApplicationWindow
         icon.name: "menu"
         onTriggered: optionsMenu.open()
     }
+
+    Component.onCompleted: function(){
+        switch(ExSelectedInterface)
+        {
+        case 0:
+            console.log("SimpleLogger")
+            stackViewMain.push("TestPage.qml")
+            break
+        case 2:
+            console.log("J2534DllWrapper")
+            stackViewMain.push("J2534Wrapper.qml")
+            break
+        case 3:
+            console.log("J2534Emulator")
+            stackViewMain.push("J2534Emulator.qml")
+            break
+        case 4:
+            console.log("J2534Cannelloni")
+            stackViewMain.push("J2534Cannelloni.qml")
+            break
+        }
+    }
+
 /*
     Drawer
     {
@@ -168,7 +191,7 @@ ApplicationWindow
                     }
                 }
 
-                initialItem: J2534Cannelloni{}
+                initialItem: TestPage{}
 
                 //initialItem: MainPage{}
 
