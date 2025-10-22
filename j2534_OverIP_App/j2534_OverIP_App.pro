@@ -44,7 +44,7 @@ message("POST: $$QMAKE_POST_LINK")
 
 qml_resources.files = Main.qml J2534Emulator.qml J2534Wrapper.qml WrapperMainView.qml MainPage.qml TestPage.qml ExIconButton.qml \
     WrapperSettings.qml WrapperRXView.qml WrapperTXView.qml WrapperRXTXQueuesView.qml CannelloniMainView.qml J2534Cannelloni.qml \
-    CannelloniSettings.qml
+    CannelloniSettings.qml CannelloniRXView.qml
 
 qml_resources.prefix = /
 
@@ -56,6 +56,7 @@ QML_IMPORT_VERSION = 1.0
 
 DISTFILES += \
     CannelloniMainView.qml \
+    CannelloniRXView.qml \
     CannelloniSettings.qml \
     ExIconButton.qml \
     J2534Cannelloni.qml \
