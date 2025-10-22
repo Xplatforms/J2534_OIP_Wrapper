@@ -10,6 +10,8 @@
 #include "exj2534wrapper.h"
 #include "exj2534cannelloni.h"
 
+
+
 int main(int argc, char *argv[])
 {
     QGuiApplication app(argc, argv);
