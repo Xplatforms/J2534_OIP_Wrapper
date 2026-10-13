@@ -1,0 +1,22 @@
+# nanopb size limits for j2534_remote.proto. Senders split batches larger
+# than these; frames are always heap-allocated (they are ~280 KB).
+
+j2534.remote.PassThruMsg.data           max_size:4128
+j2534.remote.RxBatch.msgs               max_count:64
+j2534.remote.WriteMsgsRequest.msgs      max_count:64
+j2534.remote.IoctlRequest.config        max_count:64
+j2534.remote.IoctlResult.config         max_count:64
+j2534.remote.IoctlRequest.input_bytes   max_size:256
+j2534.remote.IoctlResult.output_bytes   max_size:256
+
+# J2534 strings are at most 80 characters including the terminator.
+j2534.remote.*.secret                   max_size:64
+j2534.remote.*.client_name              max_size:80
+j2534.remote.*.adapter_name             max_size:80
+j2534.remote.*.message                  max_size:256
+j2534.remote.*.error                    max_size:256
+j2534.remote.*.name                     max_size:80
+j2534.remote.*.firmware_version         max_size:80
+j2534.remote.*.dll_version              max_size:80
+j2534.remote.*.api_version              max_size:80
+j2534.remote.*.error_description        max_size:80

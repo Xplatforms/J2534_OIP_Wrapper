@@ -67,6 +67,14 @@
   ],
   "testPresets": [
     {
+      "name": "x86",
+      "configurePreset": "x86",
+      "configuration": "Release",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
       "name": "x64",
       "configurePreset": "x64",
       "configuration": "Release",

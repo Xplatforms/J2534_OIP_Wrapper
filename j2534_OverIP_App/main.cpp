@@ -10,6 +10,54 @@
 #include "exj2534wrapper.h"
 #include "exj2534cannelloni.h"
 #include "passthruregistry.h"
+#include "vehicleserver.h"
+
+#include <QCommandLineParser>
+#include <QDir>
+#include <QFileInfo>
+#include <cstdio>
+
+// --vehicle-server --driver <dll> [--device-host <exe>] [--port <n>]
+//                  [--secret <s>] [--adapter-name <name>]
+static int runVehicleServer(const QStringList &arguments)
+{
+    QCommandLineParser parser;
+    const QCommandLineOption serverOption(QStringLiteral("vehicle-server"));
+    const QCommandLineOption driverOption(QStringLiteral("driver"), {}, QStringLiteral("dll"));
+    const QCommandLineOption hostOption(QStringLiteral("device-host"), {}, QStringLiteral("exe"));
+    const QCommandLineOption portOption(QStringLiteral("port"), {}, QStringLiteral("port"), QStringLiteral("47534"));
+    const QCommandLineOption secretOption(QStringLiteral("secret"), {}, QStringLiteral("secret"));
+    const QCommandLineOption nameOption(QStringLiteral("adapter-name"), {}, QStringLiteral("name"));
+    parser.addOptions({serverOption, driverOption, hostOption, portOption, secretOption, nameOption});
+    if (!parser.parse(arguments) || !parser.isSet(driverOption)) {
+        std::fprintf(stderr, "usage: --vehicle-server --driver <dll> [--device-host <exe>] [--port <n>] [--secret <s>]\n");
+        return 2;
+    }
+
+    VehicleServer::Options options;
+    options.driverPath = parser.value(driverOption);
+    // Install layout: dist\x64\bin\<App> next to dist\x86\j2534_device_host.exe
+    options.deviceHostPath = parser.isSet(hostOption)
+        ? parser.value(hostOption)
+        : QDir::cleanPath(QCoreApplication::applicationDirPath() + QStringLiteral("/../../x86/j2534_device_host.exe"));
+    options.port = static_cast<quint16>(parser.value(portOption).toUInt());
+    options.secret = parser.isSet(secretOption) ? parser.value(secretOption) : VehicleServer::generateSecret();
+    options.adapterName = parser.isSet(nameOption) ? parser.value(nameOption) : QFileInfo(options.driverPath).baseName();
+
+    VehicleServer server;
+    QObject::connect(&server, &VehicleServer::logMessage, [](const QString &text) {
+        std::fprintf(stdout, "%s\n", qPrintable(text));
+        std::fflush(stdout);
+    });
+    QString error;
+    if (!server.start(options, &error)) {
+        std::fprintf(stderr, "%s\n", qPrintable(error));
+        return 1;
+    }
+    std::fprintf(stdout, "Connection code (local): 127.0.0.1:%u#%s\n", server.port(), qPrintable(options.secret));
+    std::fflush(stdout);
+    return QCoreApplication::exec();
+}
 
 int main(int argc, char *argv[])
 {
@@ -18,6 +66,13 @@ int main(int argc, char *argv[])
     {
         QCoreApplication helper(argc, argv);
         return PassThruRegistry::runApplyFromArguments(helper.arguments());
+    }
+
+    // Vehicle PC without UI (also used by the end-to-end test).
+    if (argc > 1 && std::strcmp(argv[1], "--vehicle-server") == 0)
+    {
+        QCoreApplication headless(argc, argv);
+        return runVehicleServer(headless.arguments());
     }
 
     QGuiApplication app(argc, argv);

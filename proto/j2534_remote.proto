@@ -1,0 +1,210 @@
+// Remote J2534 protocol between a Diagnostic PC and a Vehicle PC.
+//
+//   Diagnostic PC: j2534_OverIP.dll (J2534Remote interface)
+//        <== WebSocket via trycloudflare ==>
+//   Vehicle PC:    App (Vehicle mode) <== named pipe ==> j2534_device_host.exe
+//                  -> real J2534 driver -> adapter -> car
+//
+// Every message on the wire is one Frame. On the named pipe a Frame is
+// prefixed by its little-endian int32 byte length; on the WebSocket each
+// binary message is one Frame.
+//
+// Both ends that execute or issue calls use nanopb with the size limits in
+// j2534_remote.options; larger batches are split by the sender.
+
+syntax = "proto3";
+
+package j2534.remote;
+
+enum Version {
+    VERSION_UNSPECIFIED = 0;
+    VERSION_CURRENT = 1;
+}
+
+message Frame {
+    oneof kind {
+        Hello hello = 1;                // Diagnostic -> Vehicle, first frame
+        HelloResult hello_result = 2;   // Vehicle -> Diagnostic
+        Request request = 3;            // Diagnostic -> Vehicle
+        Response response = 4;          // Vehicle -> Diagnostic
+        RxBatch rx = 5;                 // Vehicle -> Diagnostic, unsolicited
+        Ping ping = 6;
+        Pong pong = 7;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Session
+
+message Hello {
+    Version version = 1;
+    string secret = 2;          // from the connection code
+    string client_name = 3;     // computer name shown on the Vehicle PC
+}
+
+message HelloResult {
+    enum Status {
+        STATUS_UNSPECIFIED = 0;
+        STATUS_ACCEPTED = 1;
+        STATUS_BAD_SECRET = 2;
+        STATUS_REJECTED = 3;        // the Vehicle PC user clicked Reject
+        STATUS_BUSY = 4;            // another client is connected
+        STATUS_VERSION_MISMATCH = 5;
+    }
+    Status status = 1;
+    Version version = 2;
+    string adapter_name = 3;    // e.g. "OpenPort 2.0"
+    string message = 4;
+}
+
+message Ping { uint64 sent_us = 1; }
+message Pong { uint64 sent_us = 1; }
+
+// ---------------------------------------------------------------------------
+// J2534 data
+
+message PassThruMsg {
+    uint32 protocol_id = 1;
+    uint32 rx_status = 2;
+    uint32 tx_flags = 3;
+    uint32 timestamp = 4;
+    uint32 extra_data_index = 5;
+    bytes data = 6;             // DataSize = length
+}
+
+message ConfigParam {
+    uint32 parameter = 1;
+    uint32 value = 2;
+}
+
+// Received messages read by the Vehicle PC and pushed to the Diagnostic PC,
+// which answers PassThruReadMsgs from them.
+message RxBatch {
+    uint32 channel_id = 1;
+    repeated PassThruMsg msgs = 2;
+}
+
+// ---------------------------------------------------------------------------
+// Calls (J2534 04.04). ReadMsgs is not a call: see RxBatch.
+
+message Request {
+    uint32 id = 1;
+    oneof call {
+        OpenRequest open = 10;
+        CloseRequest close = 11;
+        ConnectRequest connect = 12;
+        DisconnectRequest disconnect = 13;
+        WriteMsgsRequest write_msgs = 14;
+        StartPeriodicMsgRequest start_periodic_msg = 15;
+        StopPeriodicMsgRequest stop_periodic_msg = 16;
+        StartMsgFilterRequest start_msg_filter = 17;
+        StopMsgFilterRequest stop_msg_filter = 18;
+        SetProgrammingVoltageRequest set_programming_voltage = 19;
+        ReadVersionRequest read_version = 20;
+        GetLastErrorRequest get_last_error = 21;
+        IoctlRequest ioctl = 22;
+    }
+}
+
+message Response {
+    uint32 id = 1;              // Request.id
+    int32 status = 2;           // J2534 return code from the real driver
+    string error = 3;           // set when the call could not be made at all
+    oneof result {
+        OpenResult open = 10;
+        ConnectResult connect = 12;
+        WriteMsgsResult write_msgs = 14;
+        StartPeriodicMsgResult start_periodic_msg = 15;
+        StartMsgFilterResult start_msg_filter = 17;
+        ReadVersionResult read_version = 20;
+        GetLastErrorResult get_last_error = 21;
+        IoctlResult ioctl = 22;
+    }
+}
+
+message OpenRequest { string name = 1; }
+message OpenResult { uint32 device_id = 1; }
+
+message CloseRequest { uint32 device_id = 1; }
+
+message ConnectRequest {
+    uint32 device_id = 1;
+    uint32 protocol_id = 2;
+    uint32 flags = 3;
+    uint32 baudrate = 4;
+}
+message ConnectResult { uint32 channel_id = 1; }
+
+message DisconnectRequest { uint32 channel_id = 1; }
+
+message WriteMsgsRequest {
+    uint32 channel_id = 1;
+    repeated PassThruMsg msgs = 2;
+    uint32 timeout = 3;
+}
+message WriteMsgsResult { uint32 num_msgs_written = 1; }
+
+message StartPeriodicMsgRequest {
+    uint32 channel_id = 1;
+    PassThruMsg msg = 2;
+    uint32 time_interval = 3;
+}
+message StartPeriodicMsgResult { uint32 msg_id = 1; }
+
+message StopPeriodicMsgRequest {
+    uint32 channel_id = 1;
+    uint32 msg_id = 2;
+}
+
+message StartMsgFilterRequest {
+    uint32 channel_id = 1;
+    uint32 filter_type = 2;
+    PassThruMsg mask = 3;
+    PassThruMsg pattern = 4;
+    PassThruMsg flow_control = 5;   // absent unless FLOW_CONTROL_FILTER
+}
+message StartMsgFilterResult { uint32 filter_id = 1; }
+
+message StopMsgFilterRequest {
+    uint32 channel_id = 1;
+    uint32 filter_id = 2;
+}
+
+message SetProgrammingVoltageRequest {
+    uint32 device_id = 1;
+    uint32 pin = 2;
+    uint32 voltage = 3;
+}
+
+message ReadVersionRequest { uint32 device_id = 1; }
+message ReadVersionResult {
+    string firmware_version = 1;
+    string dll_version = 2;
+    string api_version = 3;
+}
+
+message GetLastErrorRequest {}
+message GetLastErrorResult { string error_description = 1; }
+
+// Supported IOCTLs and the fields they use:
+//   GET_CONFIG / SET_CONFIG               config (in; GET_CONFIG returns values)
+//   READ_VBATT / READ_PROG_VOLTAGE        result output_value
+//   FIVE_BAUD_INIT                        input_bytes -> output_bytes
+//   FAST_INIT                             input_msg   -> output_msg
+//   ADD_TO / DELETE_FROM_FUNCT_MSG_LOOKUP_TABLE   input_bytes
+//   CLEAR_TX/RX_BUFFER, CLEAR_PERIODIC_MSGS, CLEAR_MSG_FILTERS,
+//   CLEAR_FUNCT_MSG_LOOKUP_TABLE         no data
+// Anything else returns ERR_NOT_SUPPORTED.
+message IoctlRequest {
+    uint32 channel_id = 1;
+    uint32 ioctl_id = 2;
+    repeated ConfigParam config = 3;
+    bytes input_bytes = 4;
+    PassThruMsg input_msg = 5;
+}
+message IoctlResult {
+    repeated ConfigParam config = 1;
+    uint32 output_value = 2;
+    bytes output_bytes = 3;
+    PassThruMsg output_msg = 4;
+}

@@ -4,6 +4,7 @@
 #include "j2534simplelogger.h"
 #include "j2534emulator.h"
 #include "j2534cannelloniclient.h"
+#include "j2534remoteclient.h"
 #include "j2534global.h"
 
 void init_console()
@@ -37,6 +38,25 @@ std::string getClassNameFromRegistry()
   }
 
   return "";
+}
+
+// Connection code for the J2534Remote interface. Per user (HKCU) so the App
+// can update it every session without administrator rights.
+std::string getRemoteConnectionCode()
+{
+    char code[1024] = {};
+    DWORD size = sizeof(code);
+    if (RegGetValueA(HKEY_CURRENT_USER, "Software\\Xplatforms\\J2534OverIP", "RemoteConnection",
+                     RRF_RT_REG_SZ, nullptr, code, &size) == ERROR_SUCCESS)
+        return std::string(code);
+    return {};
+}
+
+std::string getComputerNameA()
+{
+    char name[MAX_COMPUTERNAME_LENGTH + 1] = {};
+    DWORD size = sizeof(name);
+    return GetComputerNameA(name, &size) ? std::string(name) : std::string("Diagnostic PC");
 }
 
 std::wstring getWrappedDllFromRegistry()
@@ -110,6 +130,10 @@ BOOL WINAPI DllMain(HINSTANCE hInstDll, DWORD dwReason, LPVOID lpvReserved) {
       factory->registerGenerator("J2534DllWrapper", [] (){ return new J2534DllWrapper(); } );
       factory->registerGenerator("J2534Emulator", [] (){ return new J2534Emulator(); });
       factory->registerGenerator("J2534Cannelloni", [] (){ return new J2534CannelloniClient(); });
+      factory->registerGenerator("J2534Remote", [] (){
+          return new J2534RemoteClient(&getRemoteConnectionCode, getComputerNameA(),
+                                       [](const std::string &text) { EXDBG_LOG << text << EXDBG_END; });
+      });
 
 
       auto className = getClassNameFromRegistry();

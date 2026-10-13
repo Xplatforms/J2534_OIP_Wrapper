@@ -38,7 +38,8 @@ qt_add_qml_module(j2534_OverIP_App
         msgstableviewmodel.cpp msgstableviewmodel.h
         pipecapture.cpp pipecapture.h
         passthruregistry.cpp passthruregistry.h
-        interfaceconfig.cpp interfaceconfig.h)
+        interfaceconfig.cpp interfaceconfig.h
+        vehicleserver.cpp vehicleserver.h)
 
 # Icons are referenced as qrc:/assets/... from QML, so keep them at the root prefix.
 qt_add_resources(j2534_OverIP_App "assets"
@@ -62,7 +63,7 @@ target_compile_definitions(j2534_OverIP_App PRIVATE QT_DISABLE_DEPRECATED_BEFORE
 target_link_libraries(j2534_OverIP_App PRIVATE
     j2534_pipe_qt
     shell32
-    Qt6::Core Qt6::Gui Qt6::Quick Qt6::QuickControls2 Qt6::Widgets Qt6::Network)
+    Qt6::Core Qt6::Gui Qt6::Quick Qt6::QuickControls2 Qt6::Widgets Qt6::Network Qt6::WebSockets)
 
 include(GNUInstallDirs)
 install(TARGETS j2534_OverIP_App
